@@ -5,7 +5,7 @@ Web app (React 19, Vite and Tailwind) for uploading or capturing a handwritten p
 | Path | What it is | What it does |
 |---|---|---|
 | `index.html` | Vite entry page | Loads `src/main.jsx`. |
-| `vite.config.js` | Vite config | Plugins, plus a **dev proxy**: `/api/*` → `API_PROXY_TARGET` (default `http://localhost:8000`; the `dev_tunnel` container sets `http://host.docker.internal:8000`). |
+| `vite.config.js` | Vite config | Plugins, plus a **dev proxy**: `/api/*` → `API_PROXY_TARGET` (default `http://localhost:8000`). |
 | `src/main.jsx` | React entry | Mounts `App`. |
 | `src/App.jsx` | The workspace screen | Upload or capture → **Detect handwriting** → shows the annotated image and a summary, or the warnings with **Retake** or **Continue anyway**. |
 | `src/App.css`, `src/index.css`, `src/base.css`, `src/tokens.css` | Styles | Layout, components and design tokens. |
@@ -31,4 +31,4 @@ npm install
 npm run dev        # http://localhost:5173, /api proxied to localhost:8000
 ```
 
-Or through `../dev_tunnel` (Docker and the mobile tunnel). The API container must be running: `docker compose up -d` in the project root.
+The API container must be running: `docker compose up -d` in the project root.

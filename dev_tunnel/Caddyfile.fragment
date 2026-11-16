@@ -1,5 +1,0 @@
-# Handwriting Vite app, reverse-tunnelled from the development Mac.
-handwriting.34.57.225.191.nip.io {
-  encode zstd gzip
-  reverse_proxy 127.0.0.1:5174
-}

@@ -13,7 +13,6 @@ CPU-only handwriting detection with PaddleOCR (PP-OCRv6_medium_det, EasyOCR fall
 | `.env` | Local environment settings. It's kept out of the image and shouldn't be committed. | none | none |
 | `api/` | Backend: health check and detection services | See [`api/README.md`](api/README.md) | |
 | `app/` | Web app (React and Vite). Its `/api` requests are proxied to the API server. | See [`app/README.md`](app/README.md) | |
-| `dev_tunnel/` | Runs the Vite dev server and the mobile tunnel. `API_PROXY_TARGET` points Vite at the API. | See [`dev_tunnel/README.md`](dev_tunnel/README.md) | |
 
 ## Pipeline
 
