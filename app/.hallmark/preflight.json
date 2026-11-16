@@ -1,0 +1,17 @@
+{
+  "material": "product",
+  "audience": "people uploading handwritten pages",
+  "job": "try",
+  "tone": "simple monochrome",
+  "scope": "app",
+  "theme": "dose",
+  "theme_override": "The user explicitly requested a black and white theme, so Dose's green accent was reduced to neutral ink and warm paper.",
+  "signature": "uploaded document stage",
+  "states": ["empty", "selected", "invalid", "unavailable"],
+  "sources": [
+    "User request: handwritten web app",
+    "User request: simple black white theme",
+    "Tailwind CSS official Vite installation guide",
+    "Vite official getting started guide"
+  ]
+}

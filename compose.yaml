@@ -1,0 +1,32 @@
+services:
+  handwriting-ocr:
+    platform: linux/amd64
+    build: .
+    image: handwriting-ocr:cpu
+    ports:
+      - "127.0.0.1:8000:8000"   # localhost only; the web app reaches it through the Vite proxy
+    cpus: 1.0
+    environment:
+      OMP_NUM_THREADS: "1"
+      PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK: "True"
+      STORAGE_BACKEND: local
+      STORAGE_ROOT: /app/data
+      PREPROCESS_RETENTION_HOURS: "24"
+      HF_HUB_OFFLINE: "1"          # TrOCR is built into the image; never download at runtime
+      TRANSFORMERS_OFFLINE: "1"
+    volumes:
+      - ocr-data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
+
+volumes:
+  ocr-data:

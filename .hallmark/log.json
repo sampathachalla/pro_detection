@@ -1,0 +1,17 @@
+[
+ {
+  "date": "2026-11-16",
+  "prompt": "Create a simple black and white handwritten text detection web app with React, Vite, and Tailwind CSS.",
+  "scope": "app",
+  "theme": "dose",
+  "draw": "72a5a0",
+  "material": "product",
+  "job": "try",
+  "screen": "handwriting upload workspace",
+  "signature": "uploaded document stage",
+  "imagery": "none",
+  "posture": "restrained",
+  "axes": "light/grotesk-sans/neutral",
+  "mode": "build"
+ }
+]

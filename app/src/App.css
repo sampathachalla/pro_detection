@@ -1,0 +1,215 @@
+/* Hallmark · shape: app screen · genre: modern-minimal · theme: Dose (deal 1/3, seed handwritten-text-detection-web-c2f1·1938585a·2026-11-16·r0)
+ * nav: compact top bar · signature: uploaded document stage · states: empty, selected, invalid, unavailable · dose: monochrome paper
+ * axes: light/grotesk-sans/neutral · posture: restrained · contrast: pass · draw: 72a5a0 · v2.0.0 */
+/* Hallmark · pre-emit critique: P1 H1 E1 S1 R1 V1 · weakest: variety, kept deliberately quiet for a single-task tool */
+@import url('./tokens.css');
+@import url('./base.css');
+
+.app-shell { min-height: 100dvh; background: var(--color-paper); }
+
+.topbar {
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-lg);
+  padding: 0 var(--space-xl);
+  border-bottom: var(--rule-hair) solid var(--color-rule);
+}
+
+.wordmark {
+  font-family: var(--font-display);
+  font-size: var(--text-lg);
+  font-weight: 700;
+  letter-spacing: var(--tracking-display);
+  text-decoration: none;
+}
+
+.topbar-note { color: var(--color-muted); font-size: var(--text-sm); }
+
+.workspace {
+  width: min(100%, var(--container));
+  margin-inline: auto;
+  padding: var(--space-xl);
+}
+
+.intro {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: var(--space-xl);
+  padding-bottom: var(--space-xl);
+}
+
+.intro h1 { max-width: none; font-size: var(--text-3xl); }
+.intro p { max-width: 42ch; color: var(--color-muted); }
+
+.work-area {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  min-height: calc(100dvh - 210px);
+  border-top: var(--rule-hair) solid var(--color-rule);
+}
+
+.document-stage {
+  min-height: 560px;
+  display: grid;
+  place-items: center;
+  padding: var(--space-xl);
+  background: var(--color-paper-2);
+  border-right: var(--rule-hair) solid var(--color-rule);
+  transition: background-color var(--dur-short) var(--ease-in-out);
+}
+
+.document-stage.is-dragging { background: var(--color-paper-3); }
+
+.document-stage img {
+  width: auto;
+  max-width: 100%;
+  max-height: calc(100dvh - 290px);
+  object-fit: contain;
+  box-shadow: var(--shadow-card);
+}
+
+.empty-document {
+  display: grid;
+  justify-items: center;
+  gap: var(--space-sm);
+  text-align: center;
+}
+
+.empty-document svg {
+  width: 48px;
+  height: 48px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.25;
+}
+
+.empty-document p { font-weight: 700; }
+.empty-document span { color: var(--color-muted); font-size: var(--text-sm); }
+
+.control-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xl);
+  padding: var(--space-xl) 0 var(--space-xl) var(--space-xl);
+}
+
+.control-panel h2 { font-size: var(--text-xl); }
+.panel-copy { margin-top: var(--space-sm); color: var(--color-muted); }
+.file-details { margin: 0; }
+
+.file-details div {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: var(--space-md);
+  padding: var(--space-md) 0;
+  border-top: var(--rule-hair) solid var(--color-rule);
+}
+
+.file-details div:last-child { border-bottom: var(--rule-hair) solid var(--color-rule); }
+.file-details dt { color: var(--color-muted); }
+
+.file-details dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.actions { display: grid; gap: var(--space-sm); margin-top: auto; }
+
+.actions button {
+  min-height: 40px;
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--radius-input);
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color var(--dur-micro) var(--ease-in-out), color var(--dur-micro) var(--ease-in-out);
+}
+
+.secondary-button {
+  color: var(--color-ink);
+  background: transparent;
+  border: var(--rule-hair) solid var(--color-rule-strong);
+}
+
+.secondary-button:hover { background: var(--color-paper-2); }
+
+.primary-button {
+  color: var(--color-accent-ink);
+  background: var(--color-accent);
+  border: var(--rule-hair) solid var(--color-accent);
+}
+
+.primary-button:hover:not(:disabled) { background: var(--color-accent-deep); }
+.actions button:active:not(:disabled) { transform: translateY(1px); }
+.actions button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.status-message {
+  min-height: 1lh;
+  color: var(--color-error);
+  font-size: var(--text-sm);
+}
+
+.status-message.is-info { color: var(--color-muted); }
+
+.recognized-text ol {
+  display: grid;
+  gap: var(--space-2xs);
+  margin: var(--space-sm) 0 0;
+  padding-left: var(--space-lg);
+}
+
+.recognized-text li { overflow-wrap: anywhere; }
+.recognized-text li.is-unclear { color: var(--color-muted); }
+.unclear-note { font-size: var(--text-sm); }
+
+.view-toggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  padding: var(--space-3xs);
+  border: var(--rule-hair) solid var(--color-rule-strong);
+  border-radius: var(--radius-input);
+}
+
+.view-toggle button {
+  padding: var(--space-xs) var(--space-md);
+  color: var(--color-muted);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-input);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color var(--dur-micro) var(--ease-in-out), color var(--dur-micro) var(--ease-in-out);
+}
+
+.view-toggle button[aria-pressed='true'] { color: var(--color-ink); background: var(--color-paper-3); }
+.view-toggle button:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+
+.warning-list {
+  display: grid;
+  gap: var(--space-xs);
+  margin: var(--space-sm) 0 0;
+  padding-left: var(--space-lg);
+  color: var(--color-error);
+}
+
+@media (max-width: 52rem) {
+  .topbar, .workspace { padding-inline: var(--space-lg); }
+  .intro { align-items: start; flex-direction: column; gap: var(--space-sm); }
+  .work-area { grid-template-columns: minmax(0, 1fr); }
+  .document-stage { min-height: 420px; border-right: 0; border-bottom: var(--rule-hair) solid var(--color-rule); }
+  .control-panel { padding-left: 0; }
+}
+
+@media (max-width: 32rem) {
+  .topbar-note { display: none; }
+  .topbar, .workspace { padding-inline: var(--space-md); }
+  .workspace { padding-top: var(--space-lg); }
+  .intro h1 { font-size: var(--text-2xl); }
+  .document-stage { min-height: 360px; padding: var(--space-md); }
+}
