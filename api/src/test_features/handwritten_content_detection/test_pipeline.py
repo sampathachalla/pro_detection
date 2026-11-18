@@ -14,6 +14,7 @@ from api.src.features.handwritten_content_detection import (
     map_to_original,
     reading_order,
 )
+from api.src.features.handwritten_content_detection.pipeline import is_sideways, split_columns
 from api.src.features.preprocessing import PreprocessingConfig, PreprocessingPipeline
 from api.src.services.content_draw_service import DEFAULT_COLOR
 from api.src.services.storage import LocalFileStorage
@@ -21,6 +22,7 @@ from api.src.test_services.sample_images import png_bytes, text_image
 
 PADDLE = "api.src.services.paddle_service.detect"
 EASYOCR = "api.src.services.easyocr_service.detect"
+ORIENTATION = "api.src.services.orientation_service.classify"
 
 
 def box(x0, y0, x1, y1, score=0.9):
@@ -106,6 +108,33 @@ class TestDetectWithFakeModels(DetectorTestCase):
             result = self.detector.detect(image_id)
         self.assertEqual([r["bbox"][:2] for r in result.regions], [[20, 20], [400, 22], [20, 100], [400, 100]])
 
+    def test_sideways_page_is_turned_and_detected_again(self):
+        image_id = self.ready_image()  # 720 × 180 (w × h)
+        tall = [box(20, 10, 60, 170), box(100, 10, 140, 170)]
+        with mock.patch(PADDLE, side_effect=[tall, [box(20, 60, 150, 100)]]) as paddle, \
+                mock.patch(ORIENTATION, return_value={"angle": 270, "score": 0.99}):
+            result = self.detector.detect(image_id)
+        self.assertEqual(paddle.call_count, 2)
+        self.assertEqual(paddle.call_args_list[1].args[0].shape[:2], (720, 180), "detected on the turned page")
+        self.assertEqual(result.result["rotation"], 270)
+        self.assertEqual(result.result["image"], {"width": 180, "height": 720})
+        self.assertEqual(result.annotated.shape[:2], (720, 180))
+        self.assertEqual(self.preprocessing.load_original(image_id).shape[:2], (720, 180))
+
+    def test_sideways_boxes_but_model_says_upright_keeps_page(self):
+        image_id = self.ready_image()
+        tall = [box(20, 10, 60, 170), box(100, 10, 140, 170)]
+        with mock.patch(PADDLE, return_value=tall) as paddle, mock.patch(ORIENTATION, return_value={"angle": 0, "score": 0.6}):
+            result = self.detector.detect(image_id)
+        self.assertEqual(paddle.call_count, 1)
+        self.assertEqual(result.result["rotation"], 0)
+
+    def test_upright_page_skips_orientation_model(self):
+        image_id = self.ready_image()
+        with mock.patch(PADDLE, return_value=[box(20, 60, 300, 130)]), mock.patch(ORIENTATION) as orientation:
+            self.detector.detect(image_id)
+        orientation.assert_not_called()
+
     def test_get_result_and_load_annotated(self):
         image_id = self.ready_image()
         with mock.patch(PADDLE, return_value=[box(20, 60, 300, 130)]):
@@ -165,6 +194,34 @@ class TestHelpers(unittest.TestCase):
         regions = [region(300, 0, 400, 40), region(0, 60, 100, 100), region(0, 5, 100, 45)]
         ordered = reading_order(regions, 0.5)
         self.assertEqual([r["bbox"][:2] for r in ordered], [[0, 5], [300, 0], [0, 60]])
+
+    def test_two_columns_read_one_after_the_other(self):
+        left = [region(0, y, 400, y + 40) for y in (0, 60, 120, 180)]
+        right = [region(500, y + 5, 900, y + 45) for y in (0, 60, 120)]
+        ordered = reading_order(right + left, 0.5)
+        self.assertEqual(ordered, left + right)
+
+    def test_column_gutter_may_be_crossed_by_a_few_lines(self):
+        left = [region(0, y, 400, y + 40) for y in range(0, 600, 60)]
+        right = [region(500, y, 900, y + 40) for y in range(0, 600, 60)]
+        wide = region(0, 300, 700, 340)  # one long line runs into the right column
+        columns = split_columns(left + right + [wide])
+        self.assertEqual(len(columns), 2)
+        self.assertIn(wide, columns[0])
+
+    def test_single_column_with_short_lines_is_not_split(self):
+        regions = [region(0, 0, 900, 40), region(0, 60, 400, 100), region(600, 62, 900, 102), region(0, 120, 300, 160)]
+        self.assertEqual(len(split_columns(regions)), 1)
+
+    def test_columns_need_lines_side_by_side(self):
+        top = [region(0, y, 400, y + 40) for y in (0, 60, 120)]
+        bottom = [region(500, y, 900, y + 40) for y in (300, 360, 420)]
+        self.assertEqual(len(split_columns(top + bottom)), 1)
+
+    def test_is_sideways(self):
+        self.assertTrue(is_sideways([box(0, 0, 40, 300), box(60, 0, 100, 280), box(0, 0, 200, 40)]))
+        self.assertFalse(is_sideways([box(0, 0, 300, 40), box(0, 60, 280, 100)]))
+        self.assertFalse(is_sideways([box(0, 0, 40, 300)]), "one tall box is not enough")
 
 
 class TestDetectWithRealModels(DetectorTestCase):

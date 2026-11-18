@@ -6,7 +6,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PADDLE_PDX_CACHE_HOME=/app/models/paddlex \
     PADDLEOCR_HOME=/app/models/paddleocr \
     EASYOCR_MODULE_PATH=/app/models/easyocr \
-    TROCR_MODEL_DIR=/app/models/trocr/trocr-small-handwritten \
     STORAGE_BACKEND=local \
     STORAGE_ROOT=/app/data
 
@@ -35,16 +34,12 @@ RUN pip install --no-cache-dir \
     && pip install --no-cache-dir "numpy==2.3.5" "pillow==13.0.0" \
     && pip install --no-cache-dir "fastapi==0.163.1" "uvicorn==0.54.0" "python-multipart==0.0.34"
 
-# TrOCR (handwriting recognition). protobuf 7.36 is needed to read TrOCR's tokenizer;
-# PaddleOCR was tested with it (all 108 tests pass).
-RUN pip install --no-cache-dir "transformers==5.23.0" "sentencepiece==0.2.3" "protobuf==7.36.2"
-
 RUN find /usr/local/lib/python3.13/site-packages/paddlex \
         -type f -name '*.py' \
         -exec sed -i 's/opencv-contrib-python/opencv-python-headless/g' {} +
 
 RUN useradd --create-home --uid 10001 app \
-    && mkdir -p /app/models/paddlex /app/models/paddleocr /app/models/easyocr /app/models/trocr /app/data \
+    && mkdir -p /app/models/paddlex /app/models/paddleocr /app/models/easyocr /app/data \
     && chown -R app:app /app
 
 COPY --chown=app:app download_models.py test_ocr.py ./

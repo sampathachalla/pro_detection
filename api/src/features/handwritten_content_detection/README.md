@@ -47,7 +47,7 @@ Results are stored next to the preprocessing files, so `retake()` and the 24-hou
 | `easyocr_width_ths` | 0.1 | `DETECT_EASYOCR_WIDTH_THS` | EasyOCR fallback merge threshold. |
 | `line_tolerance` | 0.5 | `DETECT_LINE_TOLERANCE` | Boxes whose centres are less than this × the median box height apart count as the same line, for reading order. |
 | `color` | `(0, 200, 0)` green (BGR) | none | Border colour. |
-| `labels` | `False` | `DETECT_LABELS=true` | Number the boxes 1, 2, 3 in reading order. |
+| `labels` | `True` | `DETECT_LABELS=false` | Number the boxes 1, 2, 3 in reading order. |
 
 ## `schemas.py`
 

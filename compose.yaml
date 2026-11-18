@@ -6,14 +6,17 @@ services:
     ports:
       - "127.0.0.1:8000:8000"   # localhost only; the web app reaches it through the Vite proxy
     cpus: 1.0
+    env_file:
+      - path: api/.env
+        required: false
     environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_HANDWRITING_MODEL: ${OPENAI_HANDWRITING_MODEL:-gpt-6-luna}
       OMP_NUM_THREADS: "1"
       PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK: "True"
       STORAGE_BACKEND: local
       STORAGE_ROOT: /app/data
       PREPROCESS_RETENTION_HOURS: "24"
-      HF_HUB_OFFLINE: "1"          # TrOCR is built into the image; never download at runtime
-      TRANSFORMERS_OFFLINE: "1"
     volumes:
       - ocr-data:/app/data
     restart: unless-stopped

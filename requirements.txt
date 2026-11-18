@@ -9,6 +9,3 @@ pillow==13.0.0
 fastapi==0.163.1
 uvicorn==0.54.0
 python-multipart==0.0.34
-transformers==5.23.0
-sentencepiece==0.2.3
-protobuf==7.36.2

@@ -9,6 +9,8 @@ submit(bytes)
   6. if no warnings: enhance + store processed  -> READY
      else                                       -> NEEDS_REVIEW (user picks retake or confirm)
 confirm(image_id)  user chose "continue anyway" -> enhance + store processed -> READY
+rotate(image_id, k) turn a sideways page by k quarter turns -> re-enhance + store processed
+load_original(image_id) the upright photo (EXIF orientation + any page rotation)
 retake(image_id)   user chose "retake"          -> delete everything for that image
 cleanup()          delete images older than retention_hours
 """
@@ -105,8 +107,9 @@ class PreprocessingPipeline:
                 "content_type": content_type,
                 "bytes": len(data),
                 "sha256": hashlib.sha256(data).hexdigest(),
-                "width": quality["width"],    # upright (after EXIF rotation)
+                "width": quality["width"],    # upright (after EXIF rotation and page rotation)
                 "height": quality["height"],
+                "rotation": 0,  # quarter turns counter-clockwise (np.rot90 k) applied after EXIF
             },
             "quality": {**quality, "warnings": warnings},
             "options": asdict(cfg.options),
@@ -125,9 +128,30 @@ class PreprocessingPipeline:
         manifest = self.get_manifest(image_id)
         if manifest["status"] != Status.NEEDS_REVIEW:
             raise PreprocessingError(ErrorCode.INVALID_STATE, f"Image is already {manifest['status']}.")
-        image = load_image_upright(self.storage.get(manifest["source"]["key"]))
+        image = self.load_original(image_id)
         manifest["accepted_warnings"] = True
         return self._process(image, manifest)
+
+    def rotate(self, image_id: str, quarter_turns: int) -> PreprocessResult:
+        """Turn a sideways page by quarter_turns × 90° counter-clockwise and redo the processed image.
+
+        Everything after this (detection, words, reading) sees the turned page via load_original.
+        """
+        manifest = self.get_manifest(image_id)
+        if manifest["status"] != Status.READY:
+            raise PreprocessingError(ErrorCode.INVALID_STATE, f"Image is {manifest['status']}, not ready.")
+        image = np.ascontiguousarray(np.rot90(self.load_original(image_id), quarter_turns))
+        source = manifest["source"]
+        source["rotation"] = (source.get("rotation", 0) + quarter_turns) % 4
+        source["height"], source["width"] = image.shape[:2]
+        return self._process(image, manifest)
+
+    def load_original(self, image_id: str) -> np.ndarray:
+        """The stored photo upright: EXIF orientation, then any page rotation from rotate()."""
+        manifest = self.get_manifest(image_id)
+        image = load_image_upright(self.storage.get(manifest["source"]["key"]))
+        turns = manifest["source"].get("rotation", 0)  # older manifests have no rotation
+        return np.ascontiguousarray(np.rot90(image, turns)) if turns else image
 
     def retake(self, image_id: str) -> None:
         """User chose to retake: delete everything stored for this image."""

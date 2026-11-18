@@ -109,17 +109,15 @@ Pipeline: resize → grayscale → denoise → contrast boost (CLAHE) → option
 
 ---
 
-## `trocr_service.py`
+## `orientation_service.py`
 
-**What:** Handwriting recognition with **TrOCR-small-handwritten** (Microsoft; `transformers` + PyTorch).
-**Does:** Reads **one line** of handwriting and returns its text. Weights are built into the image at `TROCR_MODEL_DIR` (`/app/models/trocr/trocr-small-handwritten`, 236 MB) and loaded with `local_files_only`. `HF_HUB_OFFLINE=1` in `compose.yaml` means it never downloads. It loads once and is reused (thread-safe). About 1 s per line.
+**What:** Page orientation classifier (PaddleOCR `PP-LCNet_x1_0_doc_ori`).
+**Does:** Says whether a page photo is turned 0, 90, 180 or 270°. It only classifies; it doesn't rotate. The model is baked into the image under `PADDLE_PDX_CACHE_HOME`, loads on the first call and is then reused (thread-safe).
 
 | Function | Input | Output |
 |---|---|---|
-| `recognize(image)` | BGR or grayscale crop of **one line** | `{"text": str, "confidence": float}` (0 to 1, the mean probability of the generated tokens; low for junk such as drawings) |
-| `get_model()` | none | `(TrOCRProcessor, VisionEncoderDecoderModel)` |
-
-**Dependency note:** TrOCR-small's tokenizer needs **protobuf 7.36 or later**. PaddlePaddle installs 6.33, so the Dockerfile pins `protobuf==7.36.2`. PaddleOCR was checked with it: all 108 tests passed.
+| `classify(image)` | BGR `np.ndarray` (a whole page) | `{"angle": 0 \| 90 \| 180 \| 270, "score": float}` |
+| `get_classifier()` | none | the shared `paddleocr.DocImgOrientationClassification` instance |
 
 ---
 

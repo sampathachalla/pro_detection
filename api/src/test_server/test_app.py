@@ -68,22 +68,6 @@ class TestServer(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers["content-type"], "image/jpeg")
 
-    def test_read_text(self):
-        image_id = self.upload(png_bytes(text_image())).json()["image_id"]
-        with mock.patch("api.src.services.trocr_service.recognize", return_value={"text": "Handwritten text 123", "confidence": 0.93}):
-            response = self.client.post(f"/api/images/{image_id}/read")
-        self.assertEqual(response.status_code, 200)
-        body = response.json()
-        self.assertEqual(body["status"], "read")
-        self.assertEqual(body["text"], "Handwritten text 123")
-        self.assertEqual(body["lines"][0]["text"], "Handwritten text 123")
-        self.assertIn("read;dur=", response.headers["server-timing"])
-        # the image's state now includes the text
-        self.assertEqual(self.client.get(f"/api/images/{image_id}").json()["recognition"]["text"], "Handwritten text 123")
-
-    def test_read_unknown_image_is_404(self):
-        self.assertEqual(self.client.post(f"/api/images/{'f' * 32}/read").status_code, 404)
-
     def test_server_timing_header(self):
         response = self.upload(png_bytes(text_image()))
         timing = response.headers["server-timing"]

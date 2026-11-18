@@ -8,6 +8,7 @@ import asyncio
 import logging
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, File, Request, UploadFile
@@ -19,9 +20,11 @@ from api.src.features.handwritten_content_detection import (
     HandwrittenContentDetector,
 )
 from api.src.features.preprocessing import ErrorCode, PreprocessingError, PreprocessingPipeline, Status
-from api.src.features.handwriting_recognition import HandwritingRecognizer
+from api.src.features.llm_handwritten_recognition import LLMHandwritingRecognizer
+from api.src.features.spelling_check import SpellingChecker
 from api.src.features.word_box_draw import WordBoxDrawer
 from api.src.services import paddle_service
+from api.src.services.openai_LLM_call import OpenAIRecognitionError
 
 log = logging.getLogger("uvicorn.error")  # uvicorn's logger, so INFO lines appear in `docker logs`
 
@@ -44,7 +47,7 @@ def _error(code: str, message: str) -> JSONResponse:
     return JSONResponse({"error": {"code": code, "message": message}}, status_code=HTTP_STATUS.get(code, 400))
 
 
-def _done(result: dict, warnings: list[dict], words: dict | None = None, recognition: dict | None = None) -> dict:
+def _done(result: dict, warnings: list[dict], words: dict | None = None) -> dict:
     """Response for an image whose handwriting has been detected and drawn (lines and words)."""
     image_id = result["image_id"]
     return {
@@ -59,7 +62,6 @@ def _done(result: dict, warnings: list[dict], words: dict | None = None, recogni
         "word_count": words["count"] if words else None,
         "words": words["words"] if words else [],
         "words_annotated_url": f"/api/images/{image_id}/words.jpg" if words else None,
-        "recognition": recognition,  # TrOCR text per line once POST /read has run, else None
     }
 
 
@@ -84,6 +86,7 @@ class _Timer:
         parts = [f"{name};dur={ms:.0f}" for name, ms in self.stages] + [f"total;dur={total:.0f}"]
         log.info("image %s %s in %.0f ms (%s)", image_id, body["status"], total,
                  ", ".join(f"{name} {ms:.0f} ms" for name, ms in self.stages))
+        body = {**body, "timings_ms": {**{name: round(ms) for name, ms in self.stages}, "total": round(total)}}
         return JSONResponse(body, headers={"Server-Timing": ", ".join(parts)})
 
 
@@ -91,17 +94,33 @@ def create_app(
     preprocessing: PreprocessingPipeline | None = None,
     detector: HandwrittenContentDetector | None = None,
     word_drawer: WordBoxDrawer | None = None,
-    recognizer: HandwritingRecognizer | None = None,
     warm_up: bool = True,
     cleanup_interval_seconds: float = 3600,
 ) -> FastAPI:
     preprocessing = preprocessing or PreprocessingPipeline()
     detector = detector or HandwrittenContentDetector(preprocessing)
     word_drawer = word_drawer or WordBoxDrawer(detector)
-    recognizer = recognizer or HandwritingRecognizer(detector)
+    llm_recognizer = LLMHandwritingRecognizer(detector)
+    spelling_checker = SpellingChecker(word_drawer)
     max_bytes = preprocessing.config.max_bytes
     # One image at a time: the container has 1 CPU and the model predictors are not thread-safe.
     work_lock = threading.Lock()
+
+    def run_llm(image_id: str) -> dict:
+        """Run transcription and the spelling check in parallel. A failure in one doesn't stop the other."""
+        def safe(name: str, call) -> dict:
+            try:
+                return {"status": "ok", **call(image_id)}
+            except (OpenAIRecognitionError, DetectionError, PreprocessingError) as exc:
+                return {"status": "failed", "error": {"message": str(exc)}}
+            except Exception:
+                log.exception("%s failed", name)
+                return {"status": "failed", "error": {"message": f"{name} failed. Try again."}}
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            transcription = pool.submit(safe, "Transcription", llm_recognizer.read)
+            spelling = pool.submit(safe, "Spelling check", spelling_checker.check)
+            return {"transcription": transcription.result(), "spelling": spelling.result()}
 
     async def cleanup_loop():
         while True:
@@ -138,6 +157,13 @@ def create_app(
     async def detection_error(request: Request, exc: DetectionError):
         return _error(exc.code, exc.message)
 
+    @app.exception_handler(OpenAIRecognitionError)
+    async def openai_recognition_error(request: Request, exc: OpenAIRecognitionError):
+        return JSONResponse(
+            {"error": {"code": "openai_recognition", "message": str(exc)}},
+            status_code=exc.status_code,
+        )
+
     # Sync handlers run in FastAPI's thread pool, so model work doesn't block the event loop.
 
     @app.get("/api/health")
@@ -146,7 +172,7 @@ def create_app(
 
     @app.post("/api/images")
     def upload(request: Request, file: UploadFile = File(...)):
-        """Upload an image. Returns "done" with the drawn result, or "needs_review" with warnings."""
+        """Upload an image. Returns "done" with OCR + OpenAI results, or "needs_review" with warnings."""
         length = request.headers.get("content-length", "")
         if length.isdigit() and int(length) > max_bytes + MULTIPART_OVERHEAD:
             return _error(ErrorCode.TOO_LARGE, f"The file must be smaller than {max_bytes // (1024 * 1024)} MB.")
@@ -163,7 +189,10 @@ def create_app(
             timer.mark("detect")
             words = word_drawer.draw(pre.image_id)
             timer.mark("words")
-        return timer.respond(_done(detection.result, pre.warnings, words.result), pre.image_id)
+        # OpenAI calls run outside the lock: they wait on the network, not the CPU.
+        llm = run_llm(pre.image_id)
+        timer.mark("llm")
+        return timer.respond({**_done(detection.result, pre.warnings, words.result), "llm": llm}, pre.image_id)
 
     @app.post("/api/images/{image_id}/confirm")
     def confirm(image_id: str):
@@ -177,17 +206,9 @@ def create_app(
             timer.mark("detect")
             words = word_drawer.draw(image_id)
             timer.mark("words")
-        return timer.respond(_done(detection.result, pre.warnings, words.result), image_id)
-
-    @app.post("/api/images/{image_id}/read")
-    def read_text(image_id: str):
-        """Read the handwriting in every detected line with TrOCR (~1 s per line)."""
-        timer = _Timer()
-        with work_lock:
-            timer.mark("wait")
-            recognition = recognizer.read(image_id)
-            timer.mark("read")
-        return timer.respond({"image_id": image_id, "status": "read", **recognition}, image_id)
+        llm = run_llm(image_id)
+        timer.mark("llm")
+        return timer.respond({**_done(detection.result, pre.warnings, words.result), "llm": llm}, image_id)
 
     @app.delete("/api/images/{image_id}", status_code=204)
     def retake(image_id: str):
@@ -201,17 +222,35 @@ def create_app(
         warnings = manifest["quality"]["warnings"]
         if manifest["status"] == Status.NEEDS_REVIEW:
             return _needs_review(image_id, warnings)
-        return _done(
-            detector.get_result(image_id), warnings, word_drawer.get_result(image_id), recognizer.get_result(image_id)
-        )
+        body = _done(detector.get_result(image_id), warnings, word_drawer.get_result(image_id))
+        # Saved OpenAI results, so a page reload shows the text and mistakes again.
+        saved = {"transcription": llm_recognizer.get_result(image_id), "spelling": spelling_checker.get_result(image_id)}
+        llm = {name: {"status": "ok", **result} for name, result in saved.items() if result is not None}
+        return {**body, "llm": llm} if llm else body
 
     @app.get("/api/images/{image_id}/words.jpg")
-    def words_image(image_id: str):
+    def words_image(
+        image_id: str, word_boxes: bool | None = None, line_boxes: bool | None = None, numbers: bool | None = None,
+        spelling: bool = False,
+        crop_to_text: bool = False,
+    ):
         words = word_drawer.get_result(image_id)
         if words is None:
             raise DetectionError(DetectionErrorCode.NOT_FOUND, "Words have not been drawn for this image.")
-        data = preprocessing.storage.get(words["annotated_key"])
-        return Response(data, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=3600"})
+        if word_boxes is None and line_boxes is None and numbers is None and not spelling and not crop_to_text:
+            data = preprocessing.storage.get(words["annotated_key"])
+        else:
+            data = word_drawer.preview(
+                image_id,
+                words["words"],
+                word_boxes=word_boxes is not False,
+                line_boxes=word_drawer.config.show_lines if line_boxes is None else line_boxes,
+                numbers=numbers is not False,
+                spelling_boxes=spelling_checker.spelling_boxes(image_id) if spelling else set(),
+                crop_to_text=crop_to_text,
+            )
+        cache = "no-store" if spelling else "private, max-age=3600"
+        return Response(data, media_type="image/jpeg", headers={"Cache-Control": cache})
 
     @app.get("/api/images/{image_id}/annotated.jpg")
     def annotated(image_id: str):

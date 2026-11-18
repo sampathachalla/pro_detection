@@ -18,11 +18,13 @@ import numpy as np
 from api.src.features.handwritten_content_detection import HandwrittenContentDetector
 from api.src.features.preprocessing.config import KEY_PREFIX
 from api.src.services.content_draw_service import default_thickness, draw_boxes
-from api.src.services.image_loader import load_image, load_image_upright
+from api.src.services.image_loader import load_image
 from api.src.services.word_segmentation_service import segment_words
 
 from .config import ANNOTATED_FILENAME, ANNOTATED_JPEG_QUALITY, RESULT_FILENAME, WORDS_VERSION, WordBoxConfig
 from .schemas import WordBoxResult
+
+SPELLING_BOX_COLOR = (0, 0, 220)  # BGR red
 
 
 def crop_line(image: np.ndarray, points: list[list[int]]) -> tuple[np.ndarray, int, int]:
@@ -55,8 +57,7 @@ class WordBoxDrawer:
 
         # 1. load (raises DetectionError not_found if detection hasn't run)
         detection = self.detector.get_result(image_id)
-        manifest = self.detector.preprocessing.get_manifest(image_id)
-        original = load_image_upright(self.storage.get(manifest["source"]["key"]))
+        original = self.detector.preprocessing.load_original(image_id)
 
         # 2-4. crop, segment, map back
         words = []
@@ -75,18 +76,14 @@ class WordBoxDrawer:
                 })
 
         # 5. draw: green PaddleOCR line borders first (if enabled), then thinner blue word borders on top
-        base = original
-        if cfg.show_lines:
-            base = draw_boxes(original, detection["regions"], color=self.detector.config.color)
-        thickness = max(2, default_thickness(original) // 2)
-        annotated = draw_boxes(base, words, color=cfg.color, thickness=thickness)
+        annotated = self._draw_preview(
+            original, words, detection["regions"] if cfg.show_lines else [],
+            word_boxes=True, numbers=True,
+        )
 
         # 6. store
         prefix = f"{KEY_PREFIX}/{image_id}/"
-        ok, encoded = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, ANNOTATED_JPEG_QUALITY])
-        if not ok:
-            raise RuntimeError("failed to encode word image")
-        self.storage.put(prefix + ANNOTATED_FILENAME, encoded.tobytes(), "image/jpeg")
+        self.storage.put(prefix + ANNOTATED_FILENAME, self._encode_preview(annotated), "image/jpeg")
         result = {
             "image_id": image_id,
             "words_version": WORDS_VERSION,
@@ -98,6 +95,52 @@ class WordBoxDrawer:
         }
         self.storage.put(prefix + RESULT_FILENAME, json.dumps(result, indent=2).encode(), "application/json")
         return WordBoxResult(image_id, words, annotated, result)
+
+    def preview(
+        self, image_id: str, words: list[dict], *, word_boxes: bool, line_boxes: bool, numbers: bool,
+        spelling_boxes: set[int], crop_to_text: bool = False,
+    ) -> bytes:
+        original = self.detector.preprocessing.load_original(image_id)
+        regions = self.detector.get_result(image_id)["regions"] if line_boxes or crop_to_text else []
+        colors = {number: SPELLING_BOX_COLOR for number in spelling_boxes}
+        image = self._draw_preview(
+            original, words, regions if line_boxes else [], word_boxes=word_boxes, numbers=numbers,
+            border_colors=colors,
+        )
+        if crop_to_text and regions:
+            bounds = [region["bbox"] for region in regions]
+            margin = max(16, default_thickness(original) * 3)
+            x0 = max(0, min(box[0] for box in bounds) - margin)
+            y0 = max(0, min(box[1] for box in bounds) - margin)
+            x1 = min(image.shape[1], max(box[2] for box in bounds) + margin + 1)
+            y1 = min(image.shape[0], max(box[3] for box in bounds) + margin + 1)
+            image = image[y0:y1, x0:x1]
+        return self._encode_preview(image)
+
+    def _draw_preview(
+        self, image: np.ndarray, words: list[dict], regions: list[dict], *, word_boxes: bool, numbers: bool,
+        border_colors: dict[int, tuple[int, int, int]] | None = None,
+    ) -> np.ndarray:
+        if regions:
+            image = draw_boxes(image, regions, color=self.detector.config.color)
+        if word_boxes or numbers:
+            image = draw_boxes(
+                image,
+                words,
+                color=self.config.color,
+                thickness=max(2, default_thickness(image) // 2),
+                labels=numbers,
+                borders=word_boxes,
+                border_colors=border_colors,
+            )
+        return image
+
+    @staticmethod
+    def _encode_preview(image: np.ndarray) -> bytes:
+        ok, encoded = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, ANNOTATED_JPEG_QUALITY])
+        if not ok:
+            raise RuntimeError("failed to encode word image")
+        return encoded.tobytes()
 
     def get_result(self, image_id: str) -> dict | None:
         """Stored word_boxes.json, or None if words haven't been drawn for this image."""

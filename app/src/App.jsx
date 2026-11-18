@@ -8,7 +8,8 @@ const MAX_BYTES = 20 * 1024 * 1024
 // a 12 MP phone photo goes from ~2.5 MB to ~0.5 MB with no loss in detection.
 const UPLOAD_MAX_SIDE = 2048
 const UPLOAD_QUALITY = 0.9
-const REQUEST_TIMEOUT_MS = 120000
+// OCR plus two parallel OpenAI calls (each can take up to 120 s) in one request.
+const REQUEST_TIMEOUT_MS = 240000
 
 // "preprocess;dur=812, detect;dur=4210, total;dur=5100" -> 5100
 function serverTotalMs(header) {
@@ -79,12 +80,54 @@ async function shrinkForUpload(file) {
   }
 }
 
+// The current image id lives in the address (?image=…), so a reload can fetch the saved result.
+const savedImageId = () => new URLSearchParams(window.location.search).get('image')
+
+function rememberImage(imageId) {
+  const url = new URL(window.location.href)
+  if (imageId) url.searchParams.set('image', imageId)
+  else url.searchParams.delete('image')
+  window.history.replaceState(null, '', url)
+}
+
 const seconds = (ms) => `${(ms / 1000).toFixed(1)} s`
+const count = (value) => (value == null ? '—' : value.toLocaleString())
+
+const stageLabels = { wait: 'Queue', preprocess: 'Preprocess', detect: 'PaddleOCR', words: 'Word boxes', llm: 'OpenAI (parallel)', total: 'Server total' }
+
+// One OpenAI call: tokens (input, cached, output) and time.
+function LlmCallMetrics({ title, call }) {
+  if (!call) return null
+  return (
+    <div className="llm-call">
+      <h3>{title}</h3>
+      {call.status === 'failed' ? (
+        <p className="status-message">{call.error?.message || 'This call failed.'}</p>
+      ) : (
+        <dl className="recognition-metrics">
+          <div><dt>Model</dt><dd>{call.model}</dd></div>
+          <div><dt>Requests</dt><dd>{count(call.request_count)}</dd></div>
+          <div><dt>Input tokens</dt><dd>{count(call.usage?.input_tokens)}</dd></div>
+          <div><dt>Cached tokens</dt><dd>{count(call.usage?.cached_tokens)}</dd></div>
+          <div><dt>Output tokens</dt><dd>{count(call.usage?.output_tokens)}</dd></div>
+          <div><dt>OpenAI latency</dt><dd>{call.usage?.latency_ms == null ? '—' : seconds(call.usage.latency_ms)}</dd></div>
+          <div><dt>Feature time</dt><dd>{call.processing_ms == null ? '—' : seconds(call.processing_ms)}</dd></div>
+        </dl>
+      )}
+    </div>
+  )
+}
+
+const previewLayers = [
+  { key: 'numbers', label: 'Box numbers', path: 'M10 4 8 20m8-16-2 16M5 9h15M4 15h15' },
+  { key: 'word_boxes', label: 'Blue word boxes', path: 'M3 6h7v4H3zM13 6h8v4h-8zM3 14h10v4H3zM16 14h5v4h-5z' },
+  { key: 'line_boxes', label: 'Green line boxes', path: 'M3 6h18v4H3zM3 14h18v4H3z' },
+]
+const defaultLayers = { numbers: true, word_boxes: true, line_boxes: true }
 
 function App() {
   const uploadInputRef = useRef(null)
   const captureInputRef = useRef(null)
-  const [file, setFile] = useState(null)
   const [previewUrl, setPreviewUrl] = useState('')
   const [message, setMessage] = useState('')
   const [isError, setIsError] = useState(false)
@@ -94,11 +137,7 @@ function App() {
   const [imageId, setImageId] = useState('')
   const [warnings, setWarnings] = useState([])
   const [result, setResult] = useState(null)
-  // Which borders the result image shows: 'words' (blue, per word) or 'lines' (green, per line).
-  const [view, setView] = useState('words')
-  // TrOCR text per line, filled by "Read text" (POST /read).
-  const [recognition, setRecognition] = useState(null)
-  const [isReading, setIsReading] = useState(false)
+  const [layers, setLayers] = useState(defaultLayers)
   const [totalMs, setTotalMs] = useState(null)
   const startedAtRef = useRef(0)
 
@@ -120,13 +159,13 @@ function App() {
     setWarnings([])
     setResult(null)
     setTotalMs(null)
-    setView('words')
-    setRecognition(null)
+    setLayers(defaultLayers)
+    rememberImage('')
   }
 
   const selectFile = (nextFile) => {
+    if (isWorking || !nextFile) return
     showMessage('')
-    if (!nextFile) return
 
     if (!ACCEPTED_TYPES.includes(nextFile.type)) {
       showMessage('Choose a JPG or PNG image.', true)
@@ -138,8 +177,22 @@ function App() {
     }
 
     resetResult()
-    setFile(nextFile)
     setPreviewUrl(URL.createObjectURL(nextFile))
+    runRequest(
+      async () => {
+        const upload = await shrinkForUpload(nextFile)
+        return uploadImage(upload, (done) =>
+          showMessage(done < 1 ? `Uploading… ${Math.round(done * 100)}%` : 'Detecting handwriting and reading it with OpenAI…'),
+        )
+      },
+      'idle',
+      'Preparing the photo…',
+    )
+  }
+
+  const handleFileChange = (event) => {
+    selectFile(event.target.files[0])
+    event.target.value = ''
   }
 
   const handleDrop = (event) => {
@@ -150,6 +203,7 @@ function App() {
 
   const applyResponse = (body) => {
     setImageId(body.image_id)
+    rememberImage(body.image_id)
     setWarnings(body.warnings || [])
     if (body.status === 'needs_review') {
       setPhase('review')
@@ -157,22 +211,28 @@ function App() {
       return
     }
     setResult(body)
-    setRecognition(body.recognition || null)
     setPhase('done')
-    // The success message is shown once the annotated image has loaded (see onLoad below).
     showMessage('Loading the result image…')
   }
 
   const resultLoaded = () => {
-    if (totalMs != null) return // switching Lines/Words reloads the image; keep the first timing
+    if (totalMs != null) return // Changing preview overlays reloads the image.
     setTotalMs(performance.now() - startedAtRef.current)
-    const lines = `${result.count} handwritten ${result.count === 1 ? 'line' : 'lines'}`
-    const words = result.word_count ? ` and ${result.word_count} ${result.word_count === 1 ? 'word' : 'words'}` : ''
-    showMessage(result.count === 0 ? 'No handwriting was found in this image.' : `Found ${lines}${words}.`)
+    showMessage('')
   }
 
-  const resultImageUrl = result && view === 'words' && result.words_annotated_url
-    ? result.words_annotated_url
+  let detectionSummary = ''
+  if (result && totalMs != null) {
+    const lines = `${result.count} handwritten ${result.count === 1 ? 'line' : 'lines'}`
+    const words = result.word_count ? ` and ${result.word_count} ${result.word_count === 1 ? 'word' : 'words'}` : ''
+    detectionSummary = result.count === 0 ? 'No handwriting was found in this image.' : `Found ${lines}${words}.`
+  }
+
+  const transcription = result?.llm?.transcription
+  const spelling = result?.llm?.spelling
+  const spellingIssues = spelling?.mistakes ?? []
+  const resultImageUrl = result?.words_annotated_url
+    ? `${result.words_annotated_url}?${new URLSearchParams({ ...layers, spelling: spellingIssues.length > 0, crop_to_text: true })}`
     : result?.annotated_url
 
   const runRequest = async (request, phaseOnError, startMessage) => {
@@ -187,22 +247,31 @@ function App() {
     }
   }
 
-  const detect = () => {
-    resetResult()
+  // After a reload, show the saved result (OCR, text and mistakes) for the image in the address.
+  useEffect(() => {
+    const saved = savedImageId()
+    if (!saved) return
     runRequest(
       async () => {
-        const upload = await shrinkForUpload(file)
-        return uploadImage(upload, (done) =>
-          showMessage(done < 1 ? `Uploading… ${Math.round(done * 100)}%` : 'Detecting handwriting…'),
-        )
+        try {
+          return await callApi(`/images/${encodeURIComponent(saved)}`)
+        } catch (error) {
+          rememberImage('') // expired (24 h) or deleted: start fresh
+          throw error
+        }
       },
       'idle',
-      'Preparing the photo…',
+      'Loading the saved result…',
     )
-  }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const continueAnyway = () =>
-    runRequest(() => callApi(`/images/${imageId}/confirm`, { method: 'POST' }), 'review', 'Detecting handwriting…')
+    runRequest(
+      () => callApi(`/images/${imageId}/confirm`, { method: 'POST' }),
+      'review',
+      'Detecting handwriting and reading it with OpenAI…',
+    )
 
   const retake = async () => {
     try {
@@ -211,46 +280,41 @@ function App() {
       // Already gone or expired: nothing to clean up.
     }
     resetResult()
-    setFile(null)
     setPreviewUrl('')
     showMessage('Upload or capture a new image.')
   }
 
-  const readText = async () => {
-    setIsReading(true)
-    showMessage(`Reading ${result.count} ${result.count === 1 ? 'line' : 'lines'}… about 1 second per line.`)
-    try {
-      const body = await callApi(`/images/${imageId}/read`, { method: 'POST' })
-      setRecognition(body)
-      const took = body.serverMs != null ? ` in ${seconds(body.serverMs)}` : ''
-      showMessage(`Read ${body.lines.length} ${body.lines.length === 1 ? 'line' : 'lines'}${took}.`)
-    } catch (error) {
-      showMessage(error.message, true)
-    } finally {
-      setIsReading(false)
-    }
-  }
-
-  const isWorking = phase === 'working' || isReading
+  const isWorking = phase === 'working'
 
   return (
     <main className="app-shell">
       <header className="topbar">
-        <a className="wordmark" href="/" aria-label="Handwriting home">
+        <div className="topbar-brand">
+          {(previewUrl || result) && (
+            <button
+              className="back-button"
+              type="button"
+              disabled={isWorking}
+              onClick={retake}
+              aria-label="Back to upload"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M15 18l-6-6 6-6" />
+              </svg>
+              Back
+            </button>
+          )}
+          <a className="wordmark" href="/" aria-label="Handwriting home">
           Pro Detection
         </a>
+        </div>
         <p className="topbar-note">Text detection workspace</p>
       </header>
 
-      <section className="workspace" aria-labelledby="workspace-title">
-        <div className="intro">
-          <h1 id="workspace-title">Detect handwritten text.</h1>
-          <p>Upload a clear page to prepare it for line and word detection.</p>
-        </div>
-
+      <section className="workspace" aria-label="Handwriting detection">
         <div className="work-area">
           <div
-            className={`document-stage${isDragging ? ' is-dragging' : ''}`}
+            className={`document-stage${result ? ' has-result' : ''}${isDragging ? ' is-dragging' : ''}`}
             onDragEnter={(event) => {
               event.preventDefault()
               setIsDragging(true)
@@ -261,13 +325,37 @@ function App() {
             aria-busy={isWorking}
           >
             {result ? (
-              <img
-                key={resultImageUrl}
-                src={resultImageUrl}
-                alt={`Handwritten document with each detected ${view === 'words' ? 'word' : 'line'} outlined`}
-                onLoad={resultLoaded}
-                onError={() => showMessage('The result image could not be loaded. Try again.', true)}
-              />
+              <div className="document-result">
+                <div className="document-result-header">
+                  <h2>Preview</h2>
+                  {result.words_annotated_url && (
+                    <div className="preview-toggles" role="group" aria-label="Preview overlays">
+                      {previewLayers.map(({ key, label, path }) => (
+                        <button
+                          key={key}
+                          className="view-toggle"
+                          data-layer={key}
+                          type="button"
+                          aria-label={label}
+                          aria-pressed={layers[key]}
+                          onClick={() => setLayers((current) => ({ ...current, [key]: !current[key] }))}
+                        >
+                          <svg viewBox="0 0 24 24" aria-hidden="true">
+                            <path d={path} />
+                          </svg>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <img
+                  key={resultImageUrl}
+                  src={resultImageUrl}
+                  alt="Handwritten document preview"
+                  onLoad={resultLoaded}
+                  onError={() => showMessage('The result image could not be loaded. Try again.', true)}
+                />
+              </div>
             ) : previewUrl ? (
               <img src={previewUrl} alt="Selected handwritten document" />
             ) : (
@@ -278,116 +366,7 @@ function App() {
                 </svg>
                 <p>Upload or capture a handwritten page</p>
                 <span>JPG or PNG, up to 20 MB</span>
-              </div>
-            )}
-          </div>
-
-          <aside className="control-panel" aria-label="Detection controls">
-            {phase === 'review' && warnings.length > 0 && (
-              <div>
-                <h2>Check this image</h2>
-                <ul className="warning-list">
-                  {warnings.map((warning) => (
-                    <li key={warning.code}>{warning.message}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-
-            {result?.words_annotated_url && (
-              <div className="view-toggle" role="group" aria-label="Show borders around">
-                {['words', 'lines'].map((option) => (
-                  <button
-                    key={option}
-                    type="button"
-                    aria-pressed={view === option}
-                    onClick={() => setView(option)}
-                  >
-                    {option === 'words' ? 'Words' : 'Lines'}
-                  </button>
-                ))}
-              </div>
-            )}
-
-            {result && (
-              <dl className="file-details">
-                <div>
-                  <dt>Handwritten lines</dt>
-                  <dd>{result.count}</dd>
-                </div>
-                {result.word_count != null && (
-                  <div>
-                    <dt>Words</dt>
-                    <dd>{result.word_count}</dd>
-                  </div>
-                )}
-                <div>
-                  <dt>Detector</dt>
-                  <dd>{result.detector === 'easyocr' ? 'EasyOCR' : result.detector === 'paddle' ? 'PaddleOCR' : 'None'}</dd>
-                </div>
-                {result.serverMs != null && (
-                  <div>
-                    <dt>Processing time</dt>
-                    <dd>{seconds(result.serverMs)}</dd>
-                  </div>
-                )}
-                {totalMs != null && (
-                  <div>
-                    <dt>Total time</dt>
-                    <dd>{seconds(totalMs)}</dd>
-                  </div>
-                )}
-                <div>
-                  <dt>Image size</dt>
-                  <dd>
-                    {result.image.width} × {result.image.height}
-                  </dd>
-                </div>
-              </dl>
-            )}
-
-            {recognition && (
-              <section className="recognized-text" aria-labelledby="recognized-title">
-                <h2 id="recognized-title">Text</h2>
-                <ol>
-                  {recognition.lines.map((line) => (
-                    <li key={line.line} className={line.low_confidence ? 'is-unclear' : undefined}>
-                      {line.text || '—'}
-                      {line.low_confidence && <span className="unclear-note"> (unclear)</span>}
-                    </li>
-                  ))}
-                </ol>
-              </section>
-            )}
-
-            <div className="actions">
-              <input
-                ref={uploadInputRef}
-                className="visually-hidden"
-                type="file"
-                accept="image/jpeg,image/png"
-                onChange={(event) => selectFile(event.target.files[0])}
-              />
-              <input
-                ref={captureInputRef}
-                className="visually-hidden"
-                type="file"
-                accept="image/jpeg,image/png"
-                capture="environment"
-                onChange={(event) => selectFile(event.target.files[0])}
-              />
-
-              {phase === 'review' ? (
-                <>
-                  <button className="secondary-button" type="button" onClick={retake}>
-                    Retake
-                  </button>
-                  <button className="primary-button" type="button" onClick={continueAnyway}>
-                    Continue anyway
-                  </button>
-                </>
-              ) : (
-                <>
+                <div className="empty-document-actions">
                   <button
                     className="secondary-button"
                     type="button"
@@ -404,20 +383,135 @@ function App() {
                   >
                     Capture image
                   </button>
-                  {phase === 'done' && result?.count > 0 && !recognition ? (
-                    <button className="primary-button" type="button" disabled={isReading} onClick={readText}>
-                      {isReading ? 'Reading…' : 'Read text'}
-                    </button>
-                  ) : (
-                    <button
-                      className="primary-button"
-                      type="button"
-                      disabled={!file || isWorking || phase === 'done'}
-                      onClick={detect}
-                    >
-                      {phase === 'working' ? 'Detecting…' : 'Detect handwriting'}
-                    </button>
-                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
+          <aside className="control-panel" aria-label="Detection controls">
+            {phase === 'review' && warnings.length > 0 && (
+              <div>
+                <h2>Check this image</h2>
+                <ul className="warning-list">
+                  {warnings.map((warning) => (
+                    <li key={warning.code}>{warning.message}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {result && (
+              <div className="detection-summary">
+                <p className="status-message is-info" role="status" hidden={!detectionSummary}>{detectionSummary}</p>
+                <details className="result-details" key={imageId}>
+                  <summary>Detection details</summary>
+                  <dl className="file-details">
+                    <div>
+                      <dt>Handwritten lines</dt>
+                      <dd>{result.count}</dd>
+                    </div>
+                    {result.word_count != null && (
+                      <div>
+                        <dt>Words</dt>
+                        <dd>{result.word_count}</dd>
+                      </div>
+                    )}
+                    <div>
+                      <dt>Detector</dt>
+                      <dd>{result.detector === 'easyocr' ? 'EasyOCR' : result.detector === 'paddle' ? 'PaddleOCR' : 'None'}</dd>
+                    </div>
+                    {result.serverMs != null && (
+                      <div>
+                        <dt>Processing time</dt>
+                        <dd>{seconds(result.serverMs)}</dd>
+                      </div>
+                    )}
+                    {totalMs != null && (
+                      <div>
+                        <dt>Total time</dt>
+                        <dd>{seconds(totalMs)}</dd>
+                      </div>
+                    )}
+                    <div>
+                      <dt>Image size</dt>
+                      <dd>
+                        {result.image.width} × {result.image.height}
+                      </dd>
+                    </div>
+                    {Object.entries(result.timings_ms || {}).map(([stage, ms]) => (
+                      <div key={stage}>
+                        <dt>{stageLabels[stage] || stage}</dt>
+                        <dd>{seconds(ms)}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                </details>
+              </div>
+            )}
+
+            {transcription && (
+              <details className="result-details" open key={`text-${imageId}`}>
+                <summary>Text</summary>
+                {transcription.status === 'failed' ? (
+                  <p className="status-message">{transcription.error?.message}</p>
+                ) : (
+                  <p className="transcript">{transcription.text || 'No text was read.'}</p>
+                )}
+              </details>
+            )}
+
+            {spelling && (
+              <details className="result-details" open key={`spelling-${imageId}`}>
+                <summary>Spelling mistakes</summary>
+                {spelling.status === 'failed' ? (
+                  <p className="status-message">{spelling.error?.message}</p>
+                ) : spellingIssues.length ? (
+                  <ul className="spelling-issues">
+                    {spellingIssues.map((mistake) => (
+                      <li key={mistake.box_number}>
+                        Box {mistake.box_number}: <span>{mistake.wrong_spelling}</span> → {mistake.correct_spelling}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="spelling-issues">No spelling mistakes flagged.</p>
+                )}
+              </details>
+            )}
+
+            {result?.llm && (
+              <details className="result-details" key={`llm-${imageId}`}>
+                <summary>OpenAI calls</summary>
+                <LlmCallMetrics title="Transcription" call={transcription} />
+                <LlmCallMetrics title="Spelling check" call={spelling} />
+              </details>
+            )}
+
+            <div className="actions">
+              <input
+                ref={uploadInputRef}
+                className="visually-hidden"
+                type="file"
+                accept="image/jpeg,image/png"
+                onChange={handleFileChange}
+              />
+              <input
+                ref={captureInputRef}
+                className="visually-hidden"
+                type="file"
+                accept="image/jpeg,image/png"
+                capture="environment"
+                onChange={handleFileChange}
+              />
+
+              {phase === 'review' && (
+                <>
+                  <button className="secondary-button" type="button" onClick={retake}>
+                    Retake
+                  </button>
+                  <button className="primary-button" type="button" onClick={continueAnyway}>
+                    Continue anyway
+                  </button>
                 </>
               )}
             </div>
