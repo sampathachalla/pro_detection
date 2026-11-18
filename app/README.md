@@ -32,3 +32,5 @@ npm run dev        # http://localhost:5173, /api proxied to localhost:8000
 ```
 
 The API container must be running: `docker compose up -d` in the project root.
+
+To seed the Data panel with images already uploaded to the same OCR backend, add their comma-separated IDs to `VITE_TEST_IMAGE_IDS` in `app/.env.local` and restart Vite. An image ID is the value after `?image=` when viewing a saved result. The gallery also remembers completed uploads in the current browser. Saved images are available while the backend retains them.

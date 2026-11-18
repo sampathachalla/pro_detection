@@ -31,7 +31,7 @@ class SpellingChecker:
             raise openai_LLM_call.OpenAIRecognitionError(
                 "Word boxes have not been drawn for this image.", status_code=404
             )
-        model, api_key = LLMHandwritingRecognizer._settings()
+        llm, model, api_key = LLMHandwritingRecognizer._settings()
 
         mistakes, usage = [], {"input_tokens": 0, "cached_tokens": 0, "output_tokens": 0, "latency_ms": 0}
         box_numbers = set(range(1, len(boxes["words"]) + 1))  # same 1-based order as the drawn labels
@@ -40,7 +40,7 @@ class SpellingChecker:
                 image_id, boxes["words"], word_boxes=True, line_boxes=False, numbers=True,
                 spelling_boxes=set(), crop_to_text=True,
             ))
-            mistakes, usage = openai_LLM_call.check_numbered_spelling(
+            mistakes, usage = llm.check_numbered_spelling(
                 numbered, box_numbers, model=model, api_key=api_key,
             )
         result = {

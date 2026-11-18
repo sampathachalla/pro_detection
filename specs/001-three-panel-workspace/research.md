@@ -1,0 +1,5 @@
+# Research decisions
+
+- **Panel order and sizing.** Interpret “left side” as Result on the left. Place Data in the middle and Suggestion on the right. Use flexible desktop tracks with approximate expanded shares of 50/25/25. Give collapsed headers a compact track and let open panels fill the remaining width. Stack full-width sections on smaller screens.
+- **Previously uploaded test images.** The API has an image-detail endpoint and no collection endpoint. Use explicitly configured test IDs to seed the gallery and browser-local IDs for subsequent completed uploads. This avoids introducing a server-wide gallery or storing image bytes in the browser. Automatic discovery of every previous upload would require a separate API and an ownership model.
+- **Saved results.** Reuse GET /api/images/{id}, which returns detection and available stored transcription and spelling results. Use the existing annotated image URL as the thumbnail. The default server retention is 24 hours, so handle confirmed missing entries separately from temporary request failures.

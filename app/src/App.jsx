@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Button } from '@astryxdesign/core/Button'
 import './App.css'
 
 // Must match the API's preprocessing limits (JPEG/PNG, smaller than 20 MB).
@@ -8,7 +9,7 @@ const MAX_BYTES = 20 * 1024 * 1024
 // a 12 MP phone photo goes from ~2.5 MB to ~0.5 MB with no loss in detection.
 const UPLOAD_MAX_SIDE = 2048
 const UPLOAD_QUALITY = 0.9
-// OCR plus two parallel OpenAI calls (each can take up to 120 s) in one request.
+// OCR plus two parallel LLM calls (each can take up to 120 s) in one request.
 const REQUEST_TIMEOUT_MS = 240000
 
 // "preprocess;dur=812, detect;dur=4210, total;dur=5100" -> 5100
@@ -25,7 +26,9 @@ async function callApi(path, options) {
   const response = await fetch(`/api${path}`, options)
   if (response.status === 204) return null
   const body = await response.json().catch(() => null)
-  if (!response.ok) throw new Error(errorMessage(body, response.status))
+  if (!response.ok) {
+    throw Object.assign(new Error(errorMessage(body, response.status)), { status: response.status })
+  }
   return { ...body, serverMs: serverTotalMs(response.headers.get('Server-Timing')) }
 }
 
@@ -93,9 +96,9 @@ function rememberImage(imageId) {
 const seconds = (ms) => `${(ms / 1000).toFixed(1)} s`
 const count = (value) => (value == null ? '—' : value.toLocaleString())
 
-const stageLabels = { wait: 'Queue', preprocess: 'Preprocess', detect: 'PaddleOCR', words: 'Word boxes', llm: 'OpenAI (parallel)', total: 'Server total' }
+const stageLabels = { wait: 'Queue', preprocess: 'Preprocess', detect: 'PaddleOCR', words: 'Word boxes', llm: 'LLM calls (parallel)', total: 'Server total' }
 
-// One OpenAI call: tokens (input, cached, output) and time.
+// One LLM call (Gemini or OpenAI): tokens (input, cached, output) and time.
 function LlmCallMetrics({ title, call }) {
   if (!call) return null
   return (
@@ -110,7 +113,10 @@ function LlmCallMetrics({ title, call }) {
           <div><dt>Input tokens</dt><dd>{count(call.usage?.input_tokens)}</dd></div>
           <div><dt>Cached tokens</dt><dd>{count(call.usage?.cached_tokens)}</dd></div>
           <div><dt>Output tokens</dt><dd>{count(call.usage?.output_tokens)}</dd></div>
-          <div><dt>OpenAI latency</dt><dd>{call.usage?.latency_ms == null ? '—' : seconds(call.usage.latency_ms)}</dd></div>
+          {call.usage?.thinking_tokens != null && (
+            <div><dt>Thinking tokens</dt><dd>{count(call.usage.thinking_tokens)}</dd></div>
+          )}
+          <div><dt>API latency</dt><dd>{call.usage?.latency_ms == null ? '—' : seconds(call.usage.latency_ms)}</dd></div>
           <div><dt>Feature time</dt><dd>{call.processing_ms == null ? '—' : seconds(call.processing_ms)}</dd></div>
         </dl>
       )}
@@ -120,10 +126,77 @@ function LlmCallMetrics({ title, call }) {
 
 const previewLayers = [
   { key: 'numbers', label: 'Box numbers', path: 'M10 4 8 20m8-16-2 16M5 9h15M4 15h15' },
-  { key: 'word_boxes', label: 'Blue word boxes', path: 'M3 6h7v4H3zM13 6h8v4h-8zM3 14h10v4H3zM16 14h5v4h-5z' },
-  { key: 'line_boxes', label: 'Green line boxes', path: 'M3 6h18v4H3zM3 14h18v4H3z' },
+  { key: 'word_boxes', label: 'Word boxes', path: 'M3 6h7v4H3zM13 6h8v4h-8zM3 14h10v4H3zM16 14h5v4h-5z' },
+  { key: 'line_boxes', label: 'Line boxes', path: 'M3 6h18v4H3zM3 14h18v4H3z' },
 ]
 const defaultLayers = { numbers: true, word_boxes: true, line_boxes: true }
+
+const galleryKey = 'pro-detection.recent-images'
+const validImageId = (id) => typeof id === 'string' && /^[a-f0-9]{32}$/.test(id)
+const testImageIds = (import.meta.env.VITE_TEST_IMAGE_IDS || '').split(',').map((id) => id.trim()).filter(validImageId)
+const panels = [{ title: 'Data', weight: 1 }, { title: 'Result', weight: 2 }, { title: 'Suggestion', weight: 1 }]
+
+function readRecentImages() {
+  try {
+    const ids = JSON.parse(localStorage.getItem(galleryKey))
+    return Array.isArray(ids) ? [...new Set(ids.filter(validImageId))] : []
+  } catch {
+    return []
+  }
+}
+
+function WorkspacePanel({ title, collapsed, onToggle, children }) {
+  const contentId = `workspace-${title.toLowerCase()}`
+  return (
+    <section className="workspace-panel min-w-0" aria-labelledby={`${contentId}-heading`}>
+      <h2 id={`${contentId}-heading`} className="panel-heading">
+        <Button
+          label={title}
+          variant="ghost"
+          width="100%"
+          aria-expanded={!collapsed}
+          aria-controls={contentId}
+          endContent={
+            <span className="panel-toggle-icon" aria-hidden="true">{collapsed ? '+' : '−'}</span>
+          }
+          onClick={onToggle}
+        />
+      </h2>
+      <div id={contentId} hidden={collapsed} className="panel-content">
+        {children}
+      </div>
+    </section>
+  )
+}
+
+function GalleryTile({ id, label, selected, disabled, onSelect, onMissing, thumbnail }) {
+  const [loadedThumbnail, setLoadedThumbnail] = useState('')
+
+  useEffect(() => {
+    if (thumbnail) return
+    const controller = new AbortController()
+    callApi(`/images/${id}`, { signal: controller.signal })
+      .then((body) => setLoadedThumbnail(body.annotated_url || ''))
+      .catch((error) => {
+        if (error.status === 404) onMissing(id)
+      })
+    return () => controller.abort()
+  }, [id, onMissing, thumbnail])
+
+  const src = thumbnail || loadedThumbnail
+  return (
+    <button
+      type="button"
+      className="gallery-tile relative aspect-square overflow-hidden"
+      aria-label={label}
+      aria-pressed={selected}
+      disabled={disabled}
+      onClick={() => onSelect(id)}
+    >
+      {src ? <img src={src} alt="" loading="lazy" className="absolute inset-0 object-cover" /> : <span>{label}</span>}
+    </button>
+  )
+}
 
 function App() {
   const uploadInputRef = useRef(null)
@@ -140,6 +213,35 @@ function App() {
   const [layers, setLayers] = useState(defaultLayers)
   const [totalMs, setTotalMs] = useState(null)
   const startedAtRef = useRef(0)
+  const requestVersion = useRef(0)
+  const [collapsed, setCollapsed] = useState({})
+  const [recentIds, setRecentIds] = useState(readRecentImages)
+  const [missingIds, setMissingIds] = useState([])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(galleryKey, JSON.stringify(recentIds))
+    } catch {
+      // The gallery remains usable for this page when browser storage is unavailable.
+    }
+  }, [recentIds])
+
+  const removeMissingImage = useCallback((id) => {
+    setMissingIds((ids) => ids.includes(id) ? ids : [...ids, id])
+    setRecentIds((ids) => ids.includes(id) ? ids.filter((entry) => entry !== id) : ids)
+  }, [])
+
+  const togglePanel = (title) => setCollapsed((current) => ({ ...current, [title]: !current[title] }))
+  const panelColumns = (row) => {
+    const allCollapsed = row.every(({ title }) => collapsed[title])
+    return row.map(({ title, weight }) =>
+      collapsed[title] && !allCollapsed ? '9rem' : `minmax(0, ${allCollapsed ? 1 : weight}fr)`,
+    ).join(' ')
+  }
+  const galleries = [
+    { title: 'Samples', prefix: 'Sample', ids: [...new Set(testImageIds)].filter((id) => !missingIds.includes(id)), empty: 'No samples available.' },
+    { title: 'Upload history', prefix: 'Upload', ids: recentIds.filter((id) => !testImageIds.includes(id)), empty: 'Your uploads will appear here.' },
+  ]
 
   useEffect(
     () => () => {
@@ -164,7 +266,7 @@ function App() {
   }
 
   const selectFile = (nextFile) => {
-    if (isWorking || !nextFile) return
+    if (phase === 'working' || !nextFile) return
     showMessage('')
 
     if (!ACCEPTED_TYPES.includes(nextFile.type)) {
@@ -182,11 +284,12 @@ function App() {
       async () => {
         const upload = await shrinkForUpload(nextFile)
         return uploadImage(upload, (done) =>
-          showMessage(done < 1 ? `Uploading… ${Math.round(done * 100)}%` : 'Detecting handwriting and reading it with OpenAI…'),
+          showMessage(done < 1 ? `Uploading… ${Math.round(done * 100)}%` : 'Detecting handwriting and reading it with the LLM…'),
         )
       },
       'idle',
       'Preparing the photo…',
+      { record: true },
     )
   }
 
@@ -201,7 +304,7 @@ function App() {
     selectFile(event.dataTransfer.files[0])
   }
 
-  const applyResponse = (body) => {
+  const applyResponse = (body, record) => {
     setImageId(body.image_id)
     rememberImage(body.image_id)
     setWarnings(body.warnings || [])
@@ -210,19 +313,21 @@ function App() {
       showMessage('This image may be hard to read. Retake it or continue anyway.', true)
       return
     }
+    if (record && validImageId(body.image_id)) {
+      setRecentIds((ids) => [body.image_id, ...ids.filter((id) => id !== body.image_id)])
+    }
     setResult(body)
     setPhase('done')
-    showMessage('Loading the result image…')
+    showMessage('')
   }
 
   const resultLoaded = () => {
     if (totalMs != null) return // Changing preview overlays reloads the image.
     setTotalMs(performance.now() - startedAtRef.current)
-    showMessage('')
   }
 
   let detectionSummary = ''
-  if (result && totalMs != null) {
+  if (result) {
     const lines = `${result.count} handwritten ${result.count === 1 ? 'line' : 'lines'}`
     const words = result.word_count ? ` and ${result.word_count} ${result.word_count === 1 ? 'word' : 'words'}` : ''
     detectionSummary = result.count === 0 ? 'No handwriting was found in this image.' : `Found ${lines}${words}.`
@@ -232,37 +337,45 @@ function App() {
   const spelling = result?.llm?.spelling
   const spellingIssues = spelling?.mistakes ?? []
   const resultImageUrl = result?.words_annotated_url
-    ? `${result.words_annotated_url}?${new URLSearchParams({ ...layers, spelling: spellingIssues.length > 0, crop_to_text: true })}`
+    ? `${result.words_annotated_url}?${new URLSearchParams({ ...layers, spelling: spellingIssues.length > 0 })}`
     : result?.annotated_url
 
-  const runRequest = async (request, phaseOnError, startMessage) => {
-    setPhase('working')
+  const runRequest = async (request, phaseOnError, startMessage, { record = false, saved = '' } = {}) => {
+    const version = ++requestVersion.current
+    setPhase(saved ? 'loading' : 'working')
     startedAtRef.current = performance.now()
     showMessage(startMessage)
     try {
-      applyResponse(await request())
+      const body = await request()
+      if (version === requestVersion.current) applyResponse(body, record)
     } catch (error) {
+      if (version !== requestVersion.current) return
       setPhase(phaseOnError)
+      if (saved && error.status === 404) {
+        removeMissingImage(saved)
+        setImageId('')
+        rememberImage('')
+        showMessage('This saved image is no longer available.', true)
+        return
+      }
       showMessage(error.message, true)
     }
   }
 
-  // After a reload, show the saved result (OCR, text and mistakes) for the image in the address.
+  const selectSavedImage = (id, record = false) => {
+    if (!validImageId(id)) return
+    resetResult()
+    rememberImage(id)
+    setImageId(id)
+    setPreviewUrl('')
+    runRequest(() => callApi(`/images/${id}`), 'idle', 'Loading the saved result…', { record, saved: id })
+  }
+
+  // Reopen the active image after a page reload.
   useEffect(() => {
     const saved = savedImageId()
-    if (!saved) return
-    runRequest(
-      async () => {
-        try {
-          return await callApi(`/images/${encodeURIComponent(saved)}`)
-        } catch (error) {
-          rememberImage('') // expired (24 h) or deleted: start fresh
-          throw error
-        }
-      },
-      'idle',
-      'Loading the saved result…',
-    )
+    if (saved) selectSavedImage(saved, true)
+    return () => { requestVersion.current += 1 }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -270,21 +383,33 @@ function App() {
     runRequest(
       () => callApi(`/images/${imageId}/confirm`, { method: 'POST' }),
       'review',
-      'Detecting handwriting and reading it with OpenAI…',
+      'Detecting handwriting and reading it with the LLM…',
+      { record: true },
     )
 
-  const retake = async () => {
-    try {
-      await callApi(`/images/${imageId}`, { method: 'DELETE' })
-    } catch {
-      // Already gone or expired: nothing to clean up.
-    }
+  const clearSelection = () => {
     resetResult()
     setPreviewUrl('')
+    showMessage('')
+  }
+
+  const retake = async () => {
+    setPhase('working')
+    try {
+      await callApi(`/images/${imageId}`, { method: 'DELETE' })
+    } catch (error) {
+      if (error.status !== 404) {
+        setPhase('review')
+        showMessage(error.message, true)
+        return
+      }
+    }
+    removeMissingImage(imageId)
+    clearSelection()
     showMessage('Upload or capture a new image.')
   }
 
-  const isWorking = phase === 'working'
+  const isWorking = phase === 'working' || phase === 'loading'
 
   return (
     <main className="app-shell">
@@ -295,7 +420,7 @@ function App() {
               className="back-button"
               type="button"
               disabled={isWorking}
-              onClick={retake}
+              onClick={phase === 'review' ? retake : clearSelection}
               aria-label="Back to upload"
             >
               <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -305,14 +430,96 @@ function App() {
             </button>
           )}
           <a className="wordmark" href="/" aria-label="Handwriting home">
-          Pro Detection
-        </a>
+            Pro Detection
+          </a>
         </div>
         <p className="topbar-note">Text detection workspace</p>
       </header>
 
-      <section className="workspace" aria-label="Handwriting detection">
-        <div className="work-area">
+      <section
+        className="workspace grid w-full content-start"
+        style={{
+          '--tablet-columns': panelColumns(panels.slice(0, 2)),
+          '--desktop-columns': panelColumns(panels),
+        }}
+        aria-label="Handwriting detection"
+      >
+        <WorkspacePanel title="Data" collapsed={collapsed.Data} onToggle={() => togglePanel('Data')}>
+          <div
+            className={`upload-area flex flex-wrap justify-center gap-2${isDragging ? ' is-dragging' : ''}`}
+            onDragOver={(event) => {
+              event.preventDefault()
+              setIsDragging(true)
+            }}
+            onDragLeave={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget)) setIsDragging(false)
+            }}
+            onDrop={handleDrop}
+          >
+            <Button label="Upload image" size="lg" width="min(100%, 10rem)" variant="primary" isDisabled={isWorking} onClick={() => uploadInputRef.current?.click()} />
+            <Button label="Capture image" size="lg" width="min(100%, 10rem)" isDisabled={isWorking} onClick={() => captureInputRef.current?.click()} />
+          </div>
+          {phase === 'review' && warnings.length > 0 && (
+            <div>
+              <h2>Check this image</h2>
+              <ul className="warning-list">
+                {warnings.map((warning) => (
+                  <li key={warning.code}>{warning.message}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <input
+            ref={uploadInputRef}
+            hidden
+            type="file"
+            accept="image/jpeg,image/png"
+            onChange={handleFileChange}
+          />
+          <input
+            ref={captureInputRef}
+            hidden
+            type="file"
+            accept="image/jpeg,image/png"
+            capture="environment"
+            onChange={handleFileChange}
+          />
+
+          {phase === 'review' && (
+            <div className="review-actions">
+              <Button label="Retake" onClick={retake} />
+              <Button label="Continue anyway" variant="primary" onClick={continueAnyway} />
+            </div>
+          )}
+
+          <p className={`status-message${isError ? '' : ' is-info'}`} role="status" aria-live="polite" hidden={!message}>
+            {message}
+          </p>
+          {galleries.map(({ title, prefix, ids, empty }) => (
+            <section key={prefix} className="image-gallery" aria-labelledby={`gallery-${prefix.toLowerCase()}`}>
+              <h3 id={`gallery-${prefix.toLowerCase()}`}>{title}</h3>
+              {ids.length ? (
+                <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,5rem),1fr))] gap-2">
+                  {ids.map((id, index) => (
+                    <GalleryTile
+                      key={id}
+                      id={id}
+                      label={`${prefix} ${index + 1}`}
+                      selected={imageId === id}
+                      disabled={phase === 'working'}
+                      onSelect={selectSavedImage}
+                      onMissing={removeMissingImage}
+                      thumbnail={imageId === id ? result?.annotated_url : undefined}
+                    />
+                  ))}
+                </div>
+              ) : <p className="panel-copy">{empty}</p>}
+            </section>
+          ))}
+        </WorkspacePanel>
+
+        <WorkspacePanel title="Result" collapsed={collapsed.Result} onToggle={() => togglePanel('Result')}>
           <div
             className={`document-stage${result ? ' has-result' : ''}${isDragging ? ' is-dragging' : ''}`}
             onDragEnter={(event) => {
@@ -320,40 +527,39 @@ function App() {
               setIsDragging(true)
             }}
             onDragOver={(event) => event.preventDefault()}
-            onDragLeave={() => setIsDragging(false)}
+            onDragLeave={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget)) setIsDragging(false)
+            }}
             onDrop={handleDrop}
             aria-busy={isWorking}
           >
             {result ? (
               <div className="document-result">
-                <div className="document-result-header">
-                  <h2>Preview</h2>
-                  {result.words_annotated_url && (
-                    <div className="preview-toggles" role="group" aria-label="Preview overlays">
-                      {previewLayers.map(({ key, label, path }) => (
-                        <button
-                          key={key}
-                          className="view-toggle"
-                          data-layer={key}
-                          type="button"
-                          aria-label={label}
-                          aria-pressed={layers[key]}
-                          onClick={() => setLayers((current) => ({ ...current, [key]: !current[key] }))}
-                        >
-                          <svg viewBox="0 0 24 24" aria-hidden="true">
-                            <path d={path} />
-                          </svg>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
+                {result.words_annotated_url && (
+                  <div className="preview-toggles" role="group" aria-label="Overlay filters">
+                    {previewLayers.map(({ key, label, path }) => (
+                      <button
+                        key={key}
+                        className="view-toggle"
+                        data-layer={key}
+                        type="button"
+                        aria-pressed={layers[key]}
+                        onClick={() => setLayers((current) => ({ ...current, [key]: !current[key] }))}
+                      >
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                          <path d={path} />
+                        </svg>
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                )}
                 <img
                   key={resultImageUrl}
                   src={resultImageUrl}
                   alt="Handwritten document preview"
                   onLoad={resultLoaded}
-                  onError={() => showMessage('The result image could not be loaded. Try again.', true)}
+                  onError={() => showMessage('The preview could not be loaded. Select the image again to retry.', true)}
                 />
               </div>
             ) : previewUrl ? (
@@ -364,163 +570,108 @@ function App() {
                   <path d="M7 3.75h7l3 3v13.5H7z" />
                   <path d="M14 3.75v3h3M9.5 11h5M9.5 14h5M9.5 17h3" />
                 </svg>
-                <p>Upload or capture a handwritten page</p>
-                <span>JPG or PNG, up to 20 MB</span>
-                <div className="empty-document-actions">
-                  <button
-                    className="secondary-button"
-                    type="button"
-                    disabled={isWorking}
-                    onClick={() => uploadInputRef.current?.click()}
-                  >
-                    Upload image
-                  </button>
-                  <button
-                    className="secondary-button"
-                    type="button"
-                    disabled={isWorking}
-                    onClick={() => captureInputRef.current?.click()}
-                  >
-                    Capture image
-                  </button>
-                </div>
+                <p>{phase === 'loading' ? 'Loading saved image…' : 'Select or upload an image to preview it.'}</p>
               </div>
             )}
           </div>
 
-          <aside className="control-panel" aria-label="Detection controls">
-            {phase === 'review' && warnings.length > 0 && (
-              <div>
-                <h2>Check this image</h2>
-                <ul className="warning-list">
-                  {warnings.map((warning) => (
-                    <li key={warning.code}>{warning.message}</li>
+          {result && (
+            <div className="detection-summary">
+              <p className="status-message is-info" role="status" hidden={!detectionSummary}>{detectionSummary}</p>
+              <details className="result-details" key={imageId}>
+                <summary>Detection details</summary>
+                <dl className="file-details">
+                  <div>
+                    <dt>Handwritten lines</dt>
+                    <dd>{result.count}</dd>
+                  </div>
+                  {result.word_count != null && (
+                    <div>
+                      <dt>Words</dt>
+                      <dd>{result.word_count}</dd>
+                    </div>
+                  )}
+                  <div>
+                    <dt>Detector</dt>
+                    <dd>{result.detector === 'easyocr' ? 'EasyOCR' : result.detector === 'paddle' ? 'PaddleOCR' : 'None'}</dd>
+                  </div>
+                  {result.serverMs != null && (
+                    <div>
+                      <dt>Processing time</dt>
+                      <dd>{seconds(result.serverMs)}</dd>
+                    </div>
+                  )}
+                  {totalMs != null && (
+                    <div>
+                      <dt>Total time</dt>
+                      <dd>{seconds(totalMs)}</dd>
+                    </div>
+                  )}
+                  <div>
+                    <dt>Image size</dt>
+                    <dd>
+                      {result.image.width} × {result.image.height}
+                    </dd>
+                  </div>
+                  {Object.entries(result.timings_ms || {}).map(([stage, ms]) => (
+                    <div key={stage}>
+                      <dt>{stageLabels[stage] || stage}</dt>
+                      <dd>{seconds(ms)}</dd>
+                    </div>
+                  ))}
+                </dl>
+              </details>
+            </div>
+          )}
+        </WorkspacePanel>
+
+        <WorkspacePanel title="Suggestion" collapsed={collapsed.Suggestion} onToggle={() => togglePanel('Suggestion')}>
+          {!result && (
+            <p className="panel-copy">
+              {isWorking ? 'Loading analysis…' : 'Select an image or confirm an upload to see its analysis.'}
+            </p>
+          )}
+          {result && !transcription && !spelling && (
+            <p className="panel-copy">No saved analysis is available for this image.</p>
+          )}
+          {transcription && (
+            <details className="result-details" open key={`text-${imageId}`}>
+              <summary>Text</summary>
+              {transcription.status === 'failed' ? (
+                <p className="status-message">{transcription.error?.message || 'Transcription is unavailable.'}</p>
+              ) : (
+                <p className="transcript">{transcription.text || 'No text was read.'}</p>
+              )}
+            </details>
+          )}
+
+          {spelling && (
+            <details className="result-details" open key={`spelling-${imageId}`}>
+              <summary>Spelling mistakes</summary>
+              {spelling.status === 'failed' ? (
+                <p className="status-message">{spelling.error?.message || 'Spelling analysis is unavailable.'}</p>
+              ) : spellingIssues.length ? (
+                <ul className="spelling-issues">
+                  {spellingIssues.map((mistake) => (
+                    <li key={mistake.box_number}>
+                      Box {mistake.box_number}: <span>{mistake.wrong_spelling}</span> → {mistake.correct_spelling}
+                    </li>
                   ))}
                 </ul>
-              </div>
-            )}
-
-            {result && (
-              <div className="detection-summary">
-                <p className="status-message is-info" role="status" hidden={!detectionSummary}>{detectionSummary}</p>
-                <details className="result-details" key={imageId}>
-                  <summary>Detection details</summary>
-                  <dl className="file-details">
-                    <div>
-                      <dt>Handwritten lines</dt>
-                      <dd>{result.count}</dd>
-                    </div>
-                    {result.word_count != null && (
-                      <div>
-                        <dt>Words</dt>
-                        <dd>{result.word_count}</dd>
-                      </div>
-                    )}
-                    <div>
-                      <dt>Detector</dt>
-                      <dd>{result.detector === 'easyocr' ? 'EasyOCR' : result.detector === 'paddle' ? 'PaddleOCR' : 'None'}</dd>
-                    </div>
-                    {result.serverMs != null && (
-                      <div>
-                        <dt>Processing time</dt>
-                        <dd>{seconds(result.serverMs)}</dd>
-                      </div>
-                    )}
-                    {totalMs != null && (
-                      <div>
-                        <dt>Total time</dt>
-                        <dd>{seconds(totalMs)}</dd>
-                      </div>
-                    )}
-                    <div>
-                      <dt>Image size</dt>
-                      <dd>
-                        {result.image.width} × {result.image.height}
-                      </dd>
-                    </div>
-                    {Object.entries(result.timings_ms || {}).map(([stage, ms]) => (
-                      <div key={stage}>
-                        <dt>{stageLabels[stage] || stage}</dt>
-                        <dd>{seconds(ms)}</dd>
-                      </div>
-                    ))}
-                  </dl>
-                </details>
-              </div>
-            )}
-
-            {transcription && (
-              <details className="result-details" open key={`text-${imageId}`}>
-                <summary>Text</summary>
-                {transcription.status === 'failed' ? (
-                  <p className="status-message">{transcription.error?.message}</p>
-                ) : (
-                  <p className="transcript">{transcription.text || 'No text was read.'}</p>
-                )}
-              </details>
-            )}
-
-            {spelling && (
-              <details className="result-details" open key={`spelling-${imageId}`}>
-                <summary>Spelling mistakes</summary>
-                {spelling.status === 'failed' ? (
-                  <p className="status-message">{spelling.error?.message}</p>
-                ) : spellingIssues.length ? (
-                  <ul className="spelling-issues">
-                    {spellingIssues.map((mistake) => (
-                      <li key={mistake.box_number}>
-                        Box {mistake.box_number}: <span>{mistake.wrong_spelling}</span> → {mistake.correct_spelling}
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <p className="spelling-issues">No spelling mistakes flagged.</p>
-                )}
-              </details>
-            )}
-
-            {result?.llm && (
-              <details className="result-details" key={`llm-${imageId}`}>
-                <summary>OpenAI calls</summary>
-                <LlmCallMetrics title="Transcription" call={transcription} />
-                <LlmCallMetrics title="Spelling check" call={spelling} />
-              </details>
-            )}
-
-            <div className="actions">
-              <input
-                ref={uploadInputRef}
-                className="visually-hidden"
-                type="file"
-                accept="image/jpeg,image/png"
-                onChange={handleFileChange}
-              />
-              <input
-                ref={captureInputRef}
-                className="visually-hidden"
-                type="file"
-                accept="image/jpeg,image/png"
-                capture="environment"
-                onChange={handleFileChange}
-              />
-
-              {phase === 'review' && (
-                <>
-                  <button className="secondary-button" type="button" onClick={retake}>
-                    Retake
-                  </button>
-                  <button className="primary-button" type="button" onClick={continueAnyway}>
-                    Continue anyway
-                  </button>
-                </>
+              ) : (
+                <p className="spelling-issues">No spelling mistakes flagged.</p>
               )}
-            </div>
+            </details>
+          )}
 
-            <p className={`status-message${isError ? '' : ' is-info'}`} role="status" aria-live="polite">
-              {message}
-            </p>
-          </aside>
-        </div>
+          {result?.llm && (
+            <details className="result-details" key={`llm-${imageId}`}>
+              <summary>LLM calls</summary>
+              <LlmCallMetrics title="Transcription" call={transcription} />
+              <LlmCallMetrics title="Spelling check" call={spelling} />
+            </details>
+          )}
+        </WorkspacePanel>
       </section>
     </main>
   )
