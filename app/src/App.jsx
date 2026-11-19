@@ -204,8 +204,8 @@ function HighlightedTranscript({ text, mistakes, selectedIssue, onSelect }) {
 function WorkspacePanel({ title, collapsed, onToggle, actions, imageId, showCollapse = false, busy = false, children }) {
   const contentId = `workspace-${title.toLowerCase()}`
   return (
-    <section className="workspace-panel min-w-0" hidden={title === 'Data' && collapsed} aria-labelledby={`${contentId}-heading`}>
-      <div className="panel-header">
+    <section className={`workspace-panel min-w-0${title === 'Data' && collapsed ? ' data-panel-collapsed' : ''}`} aria-labelledby={`${contentId}-heading`}>
+      <div className={showCollapse ? 'panel-header panel-header-dropdown' : 'panel-header'}>
       <h2 id={`${contentId}-heading`} className={title === 'Suggestion' && collapsed ? 'visually-hidden' : 'panel-heading'}>
         {title}{imageId && <span className="image-id panel-image-id">Image ID <span>{imageId}</span></span>}
       </h2>
@@ -220,6 +220,8 @@ function WorkspacePanel({ title, collapsed, onToggle, actions, imageId, showColl
             aria-controls={contentId}
             onClick={onToggle}
           >
+            <span className="panel-dropdown-label" aria-hidden="true">{title}</span>
+            <span className="panel-dropdown-label" aria-hidden="true">{collapsed ? '▾' : '▴'}</span>
             <svg className="sidebar-icon" viewBox="0 0 24 24" aria-hidden="true">
               <rect x="3" y="4" width="18" height="16" rx="2" />
               <path d="M15 4v16" />
@@ -228,7 +230,7 @@ function WorkspacePanel({ title, collapsed, onToggle, actions, imageId, showColl
         </div>
       )}
       </div>
-      <div id={contentId} hidden={collapsed} className="panel-content" aria-busy={busy}>
+      <div id={contentId} hidden={title !== 'Data' && collapsed} className="panel-content" aria-busy={busy}>
         {busy ? (
           <div className="panel-skeleton" role="status" aria-live="polite">
             <span className="visually-hidden">{title === 'Result' ? 'Processing image…' : 'Loading analysis…'}</span>
@@ -281,6 +283,8 @@ function GalleryTile({ id, label, selected, disabled, onSelect, onMissing, thumb
 function App() {
   const uploadInputRef = useRef(null)
   const captureInputRef = useRef(null)
+  const discoverToggleRef = useRef(null)
+  const [discoverOpen, setDiscoverOpen] = useState(false)
   const [previewUrl, setPreviewUrl] = useState('')
   const [pendingFile, setPendingFile] = useState(null)
   // The picked photo, kept after a saved result is shown (pendingFile is cleared then), for "Run LLM only".
@@ -437,6 +441,11 @@ function App() {
   const handleFileChange = (event) => {
     selectFile(event.target.files[0])
     event.target.value = ''
+  }
+
+  const closeDiscover = () => {
+    if (discoverOpen) discoverToggleRef.current?.focus()
+    setDiscoverOpen(false)
   }
 
   const selectResourceImage = async (name, url) => {
@@ -780,6 +789,18 @@ function App() {
             </section>
           )}
           <div hidden={showDetectionDetails} className="data-gallery-content">
+          <button
+            ref={discoverToggleRef}
+            type="button"
+            className="gallery-toggle"
+            aria-expanded={discoverOpen}
+            aria-controls="discover-content"
+            onClick={() => setDiscoverOpen((open) => !open)}
+          >
+            Discover
+            <span aria-hidden="true">{discoverOpen ? '▴' : '▾'}</span>
+          </button>
+          <div id="discover-content" className="data-gallery-content">
           {galleries.map(({ title, prefix, ids, images = [], empty }) => (
             <section key={prefix} className="image-gallery" aria-labelledby={`gallery-${prefix.toLowerCase()}`}>
               <h3 id={`gallery-${prefix.toLowerCase()}`}>{title}</h3>
@@ -793,7 +814,10 @@ function App() {
                         id={path}
                         label={name}
                         disabled={isWorking}
-                        onSelect={() => selectResourceImage(name, url)}
+                        onSelect={() => {
+                          closeDiscover()
+                          selectResourceImage(name, url)
+                        }}
                         thumbnail={url}
                       />
                     )
@@ -805,7 +829,10 @@ function App() {
                       label={`${prefix} ${index + 1}`}
                       selected={imageId === id}
                       disabled={phase === 'working'}
-                      onSelect={selectSavedImage}
+                      onSelect={() => {
+                        closeDiscover()
+                        selectSavedImage(id)
+                      }}
                       onMissing={removeMissingImage}
                       thumbnail={imageId === id ? result?.annotated_url : undefined}
                     />
@@ -814,6 +841,7 @@ function App() {
               ) : <p className="panel-copy">{empty}</p>}
             </section>
           ))}
+          </div>
           </div>
         </WorkspacePanel>
 
