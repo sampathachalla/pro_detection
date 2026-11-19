@@ -185,32 +185,27 @@
   gap: var(--space-md);
 }
 
-.panel-loading {
+.skeleton-content { display: grid; gap: var(--space-md); }
+.skeleton-card {
   display: grid;
-  justify-items: center;
-  align-content: center;
   gap: var(--space-sm);
-  min-height: 18rem;
-  color: var(--color-muted);
+  padding: var(--space-md);
+  border: var(--rule-hair) solid var(--color-rule);
+  border-radius: var(--radius-input);
 }
-
-.processing-icon {
-  font-size: 2.5rem;
-  line-height: 1;
-  animation: panel-spin 2s linear infinite;
+.skeleton-block {
+  border-radius: 6px;
+  background: linear-gradient(100deg, var(--color-paper-3) 20%, var(--color-paper-2) 45%, var(--color-paper-3) 70%);
+  background-size: 250% 100%;
+  animation: skeleton-shimmer 1.6s ease-in-out infinite;
 }
-
-.loading-spinner {
-  width: 2rem;
-  height: 2rem;
-  border: 3px solid var(--color-rule);
-  border-top-color: var(--color-ink);
-  border-radius: 50%;
-  animation: panel-spin 0.8s linear infinite;
-}
-
-@keyframes panel-spin {
-  to { transform: rotate(360deg); }
+.skeleton-image { height: 35dvh; border-radius: var(--radius-input); }
+.skeleton-label { width: 30%; height: 1rem; }
+.skeleton-line { width: 100%; height: 0.875rem; }
+.skeleton-line-short { width: 65%; }
+@keyframes skeleton-shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: 0 0; }
 }
 
 .upload-area {
@@ -266,6 +261,14 @@
   align-items: start;
   gap: var(--space-md);
   min-width: 0;
+}
+
+.image-detection-summary {
+  justify-self: end;
+  text-align: right;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--color-muted);
 }
 
 .result-card {
@@ -331,9 +334,75 @@
   cursor: pointer;
 }
 
-.extracted-text { padding-block: var(--space-md); }
+.extracted-text {
+  position: relative;
+  padding: var(--space-xs) var(--space-md);
+  padding-bottom: 42px;
+  background: var(--color-paper);
+}
 
-#detection-details-heading {
+.extracted-text .transcript {
+  max-width: 65ch;
+  margin: 0 auto;
+  font-size: 1.375rem;
+  line-height: 1.55;
+}
+
+.transcript button.spelling-underline {
+  display: inline;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  text-align: inherit;
+}
+
+.transcript button.spelling-underline:hover,
+.transcript button.spelling-underline[aria-pressed='true'] { background: #fce2e2; }
+
+.writing-suggestions { display: grid; gap: var(--space-md); }
+.suggestions-heading { font-size: var(--text-md); }
+.suggestion-cards { display: grid; gap: var(--space-sm); list-style: none; padding: 0; margin: 0; }
+.suggestion-card {
+  display: grid;
+  gap: var(--space-sm);
+  width: 100%;
+  padding: var(--space-md);
+  text-align: left;
+  background: var(--color-paper);
+  border: var(--rule-hair) solid var(--color-rule);
+  border-left: 3px solid #ee9999;
+  border-radius: var(--radius-input);
+  cursor: pointer;
+}
+.suggestion-card:hover,
+.suggestion-card[data-selected='true'] { background: #fff4f3; border-color: #d97979; }
+.suggestion-select {
+  display: grid;
+  gap: var(--space-sm);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.suggestion-card-actions { display: flex; justify-content: flex-end; }
+.text-copy-actions { position: absolute; right: 2px; bottom: 2px; display: flex; flex-direction: row-reverse; align-items: center; gap: var(--space-xs); font-size: var(--text-sm); color: var(--color-muted); }
+.copy-text-button { display: grid; place-items: center; width: 36px; height: 36px; border: 0; border-radius: 6px; background: transparent; color: var(--color-muted); cursor: pointer; }
+.copy-text-button:hover { background: var(--color-paper-3); }
+.copy-text-button svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width: 1.5; }
+.suggestion-category { color: #a94141; font-size: var(--text-sm); font-weight: 600; }
+.suggestion-change { display: flex; flex-wrap: wrap; gap: var(--space-xs); align-items: baseline; overflow-wrap: anywhere; }
+.suggestion-change del { color: #a94141; }
+.suggestion-change strong { color: #237526; font-weight: 600; }
+.suggestion-context { color: var(--color-muted); font-size: var(--text-sm); }
+
+#detection-details-heading,
+#llm-details-heading {
   padding: var(--space-sm) 0;
   font-size: var(--text-md);
 }

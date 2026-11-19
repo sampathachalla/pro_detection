@@ -173,15 +173,24 @@ function readRecentImages(key = galleryKey) {
   }
 }
 
-function HighlightedTranscript({ text, mistakes }) {
+function spellingPattern(phrases) {
+  const alternatives = phrases.map((phrase) => phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')
+  return new RegExp(`(?<![\\p{L}\\p{N}_])(${alternatives})(?![\\p{L}\\p{N}_])`, 'giu')
+}
+
+function HighlightedTranscript({ text, mistakes, selectedIssue, onSelect }) {
   const phrases = [...new Set(mistakes.map((mistake) => mistake.wrong_spelling?.trim()).filter(Boolean))]
     .sort((left, right) => right.length - left.length)
   if (!phrases.length) return text
-  const alternatives = phrases.map((phrase) => phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')
-  const pattern = new RegExp(`(?<![\\p{L}\\p{N}_])(${alternatives})(?![\\p{L}\\p{N}_])`, 'giu')
-  return text.split(pattern).map((part, index) => index % 2 === 1
-    ? <span className="spelling-underline" key={index}>{part}</span>
-    : part)
+  const pattern = spellingPattern(phrases)
+  return text.split(pattern).map((part, index) => {
+    if (index % 2 === 0) return part
+    const mistake = mistakes.find((issue) => issue.wrong_spelling?.trim().toLowerCase() === part.toLowerCase())
+    if (!mistake) return part
+    return <button type="button" className="spelling-underline" key={index}
+      aria-label={`Review spelling of ${part}`} aria-pressed={selectedIssue === mistake.box_number}
+      onClick={() => onSelect(mistake.box_number)}>{part}</button>
+  })
 }
 
 function WorkspacePanel({ title, collapsed, onToggle, actions, imageId, showCollapse = false, busy = false, children }) {
@@ -213,13 +222,18 @@ function WorkspacePanel({ title, collapsed, onToggle, actions, imageId, showColl
       </div>
       <div id={contentId} hidden={collapsed} className="panel-content" aria-busy={busy}>
         {busy ? (
-          <div className="panel-loading" role="status" aria-live="polite">
-            {title === 'Result' ? (
-              <span className="processing-icon" aria-hidden="true">⚙</span>
-            ) : (
-              <span className="loading-spinner" aria-hidden="true" />
-            )}
-            <p>{title === 'Result' ? 'Processing image…' : 'Loading analysis…'}</p>
+          <div className="panel-skeleton" role="status" aria-live="polite">
+            <span className="visually-hidden">{title === 'Result' ? 'Processing image…' : 'Loading analysis…'}</span>
+            <div aria-hidden="true" className="skeleton-content">
+              {title === 'Result' && <div className="skeleton-block skeleton-image" />}
+              {[0, 1, 2].map((index) => (
+                <div className="skeleton-card" key={index}>
+                  <div className="skeleton-block skeleton-label" />
+                  <div className="skeleton-block skeleton-line" />
+                  <div className="skeleton-block skeleton-line skeleton-line-short" />
+                </div>
+              ))}
+            </div>
           </div>
         ) : children}
       </div>
@@ -276,6 +290,8 @@ function App() {
   const recordUploadRef = useRef(false)
   const [collapsed, setCollapsed] = useState({ Data: true })
   const [showDetectionDetails, setShowDetectionDetails] = useState(false)
+  const [selectedIssue, setSelectedIssue] = useState(null)
+  const [copyMessage, setCopyMessage] = useState('')
   const [recentIds, setRecentIds] = useState(() => readRecentImages())
   const [uploadedIds, setUploadedIds] = useState(() => readRecentImages('pro-detection.user-uploads'))
   const legacyUploadIds = useRef(readRecentImages())
@@ -331,9 +347,12 @@ function App() {
   const panelColumns = (row) => {
     const visiblePanels = row.filter(({ title }) => title !== 'Data' || !collapsed.Data)
     const allCollapsed = visiblePanels.every(({ title }) => collapsed[title])
-    return visiblePanels.map(({ title, weight }) =>
-      title === 'Data' ? 'clamp(16rem, 25vw, 24rem)' : collapsed[title] && !allCollapsed ? '9rem' : `minmax(0, ${allCollapsed ? 1 : weight}fr)`,
-    ).join(' ')
+    return visiblePanels.map(({ title, weight }) => {
+      if (title === 'Data') return 'clamp(16rem, 25vw, 24rem)'
+      if (collapsed[title] && !allCollapsed) return '9rem'
+      if (title === 'Suggestion') return 'clamp(16rem, 25vw, 24rem)'
+      return `minmax(0, ${allCollapsed ? 1 : weight}fr)`
+    }).join(' ')
   }
   const galleries = [
     { title: 'Discover', prefix: 'Sample', ids: [...new Set(testImageIds)].filter((id) => !missingIds.includes(id)), images: resourceImages, empty: 'No samples available.' },
@@ -353,6 +372,8 @@ function App() {
   }
 
   const resetResult = () => {
+    setCopyMessage('')
+    setSelectedIssue(null)
     setShowDetectionDetails(false)
     setPendingFile(null)
     setPhase('idle')
@@ -473,6 +494,31 @@ function App() {
   const transcription = result?.llm?.transcription
   const spelling = result?.llm?.spelling
   const spellingIssues = spelling?.mistakes ?? []
+  const correctSpelling = (mistake) => {
+    const wrong = mistake.wrong_spelling?.trim()
+    if (!wrong || !transcription?.text) return
+    const corrected = transcription.text.replace(spellingPattern([wrong]), () => mistake.correct_spelling)
+    if (corrected === transcription.text) {
+      showMessage('This spelling could not be found in the extracted text.', true)
+      return
+    }
+    setResult((current) => ({ ...current, llm: {
+      ...current.llm,
+      transcription: { ...current.llm.transcription, text: corrected },
+      spelling: { ...current.llm.spelling, mistakes: current.llm.spelling.mistakes.filter((issue) => issue.wrong_spelling?.trim().toLowerCase() !== wrong.toLowerCase()) },
+    } }))
+    setSelectedIssue(null)
+    setCopyMessage('')
+  }
+
+  const copyText = async () => {
+    try {
+      await navigator.clipboard.writeText(transcription.text)
+      setCopyMessage('Copied')
+    } catch {
+      setCopyMessage('Copy failed. Select the text to copy it.')
+    }
+  }
   const resultImageUrl = result?.words_annotated_url
     ? `${result.words_annotated_url}?${new URLSearchParams({ ...layers, spelling: spellingIssues.length > 0, crop_to_text: true })}`
     : result?.annotated_url
@@ -651,7 +697,6 @@ function App() {
 
           {showDetectionDetails && result && (
             <div className="detection-summary">
-              <p className="status-message is-info" role="status" hidden={!detectionSummary}>{detectionSummary}</p>
               <section className="result-details" aria-labelledby="detection-details-heading" key={imageId}>
                 <h3 id="detection-details-heading">Detection details</h3>
                 <dl className="file-details">
@@ -696,6 +741,13 @@ function App() {
                 </dl>
               </section>
             </div>
+          )}
+          {showDetectionDetails && result?.llm && (
+            <section className="result-details llm-details" aria-labelledby="llm-details-heading" key={`llm-${imageId}`}>
+              <h3 id="llm-details-heading">LLM calls</h3>
+              <LlmCallMetrics title="Transcription" call={transcription} />
+              <LlmCallMetrics title="Spelling check" call={spelling} />
+            </section>
           )}
           <div hidden={showDetectionDetails} className="data-gallery-content">
           {galleries.map(({ title, prefix, ids, images = [], empty }) => (
@@ -768,6 +820,7 @@ function App() {
 
         }>
           <div className={result ? 'result-layout' : undefined}>
+          {result && <p className="image-detection-summary" role="status">{detectionSummary}</p>}
           <div className={result ? 'result-card' : undefined}>
           <div
             className={`document-stage${result ? ' has-result' : ''}${isDragging ? ' is-dragging' : ''}`}
@@ -817,7 +870,18 @@ function App() {
               {transcription.status === 'failed' ? (
                 <p className="status-message">{transcription.error?.message || 'Transcription is unavailable.'}</p>
               ) : (
-                <p className="transcript"><HighlightedTranscript text={transcription.text || 'No text was read.'} mistakes={spellingIssues} /></p>
+                <p className="transcript"><HighlightedTranscript text={transcription.text || 'No text was read.'} mistakes={spellingIssues} selectedIssue={selectedIssue} onSelect={(number) => {
+                  setSelectedIssue(number)
+                  setCollapsed((current) => ({ ...current, Suggestion: false }))
+                }} /></p>
+              )}
+              {transcription.status !== 'failed' && transcription.text && (
+                <div className="text-copy-actions">
+                  <button className="copy-text-button" type="button" onClick={copyText} aria-label="Copy text" title="Copy text">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="13" rx="2" /><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3" /></svg>
+                  </button>
+                  <span role="status">{copyMessage}</span>
+                </div>
               )}
             </section>
           )}
@@ -837,31 +901,31 @@ function App() {
           )}
 
           {spelling && (
-            <details className="result-details" open key={`spelling-${imageId}`}>
-              <summary>Spelling mistakes</summary>
+            <section className="writing-suggestions" aria-label="Spelling suggestions" key={`spelling-${imageId}`}>
+              <h3 className="suggestions-heading">{spellingIssues.length ? `${spellingIssues.length} spelling suggestions` : 'Spelling'}</h3>
               {spelling.status === 'failed' ? (
                 <p className="status-message">{spelling.error?.message || 'Spelling analysis is unavailable.'}</p>
               ) : spellingIssues.length ? (
-                <ul className="spelling-issues">
+                <ul className="suggestion-cards">
                   {spellingIssues.map((mistake) => (
                     <li key={mistake.box_number}>
-                      Box {mistake.box_number}: <span>{mistake.wrong_spelling}</span> → {mistake.correct_spelling}
+                      <div className="suggestion-card" data-selected={selectedIssue === mistake.box_number}>
+                        <button className="suggestion-select" type="button" aria-pressed={selectedIssue === mistake.box_number} onClick={() => setSelectedIssue(mistake.box_number)}>
+                        <span className="suggestion-category">Spelling</span>
+                        <span className="suggestion-change"><del>{mistake.wrong_spelling}</del><span aria-hidden="true">→</span><strong>{mistake.correct_spelling}</strong></span>
+                        </button>
+                        <div className="suggestion-card-actions"><Button label="Correct" variant="primary" onClick={() => correctSpelling(mistake)} /></div>
+                      </div>
                     </li>
                   ))}
                 </ul>
               ) : (
                 <p className="spelling-issues">No spelling mistakes flagged.</p>
               )}
-            </details>
+            </section>
           )}
 
-          {result?.llm && (
-            <details className="result-details" key={`llm-${imageId}`}>
-              <summary>LLM calls</summary>
-              <LlmCallMetrics title="Transcription" call={transcription} />
-              <LlmCallMetrics title="Spelling check" call={spelling} />
-            </details>
-          )}
+
         </WorkspacePanel>
       </section>
     </main>
