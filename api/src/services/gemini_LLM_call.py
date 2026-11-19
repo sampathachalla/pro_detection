@@ -12,12 +12,18 @@ from urllib.request import Request, urlopen
 import numpy as np
 
 from .llm_prompts import (
+    BOXED_SPELLING_INSTRUCTIONS,
+    BOXED_SPELLING_SCHEMA,
+    PAGE_TRANSCRIBE_INSTRUCTIONS,
+    PAGE_TRANSCRIBE_SCHEMA,
     SPELLING_INSTRUCTIONS,
     SPELLING_SCHEMA,
     TRANSCRIBE_INSTRUCTIONS,
     TRANSCRIBE_SCHEMA,
     LLMRecognitionError,
     encode_png,
+    parse_boxed_spelling,
+    parse_page_lines,
     parse_spelling,
     parse_transcription,
 )
@@ -40,6 +46,22 @@ def check_numbered_spelling(
     # "low": at "medium" Gemini 3.8 Flash spent ~10k thinking tokens and ~90 s on an 11-word page.
     text, usage = _generate(model, api_key, SPELLING_INSTRUCTIONS, image, SPELLING_SCHEMA, thinking="low")
     return parse_spelling(text, box_numbers, "Gemini"), usage
+
+
+def transcribe_page(image: np.ndarray, *, model: str, api_key: str) -> tuple[list[str], dict]:
+    """Transcribe a plain photo (no boxes drawn). Returns (lines top to bottom, usage)."""
+    text, usage = _generate(model, api_key, PAGE_TRANSCRIBE_INSTRUCTIONS, image, PAGE_TRANSCRIBE_SCHEMA, thinking="low")
+    return parse_page_lines(text, "Gemini"), usage
+
+
+def check_spelling_with_boxes(image: np.ndarray, *, model: str, api_key: str) -> tuple[list[dict], int, dict]:
+    """Find misspelled words on a plain photo; Gemini also locates them.
+
+    Returns (mistakes with box_2d [ymin, xmin, ymax, xmax] scaled 0-1000, number of words read, usage).
+    """
+    text, usage = _generate(model, api_key, BOXED_SPELLING_INSTRUCTIONS, image, BOXED_SPELLING_SCHEMA, thinking="low")
+    mistakes, word_count = parse_boxed_spelling(text, "Gemini")
+    return mistakes, word_count, usage
 
 
 def _generate(

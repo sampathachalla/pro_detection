@@ -2,6 +2,13 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Button } from '@astryxdesign/core/Button'
 import './App.css'
 
+// true: after processing, the Data panel opens Detection details and LLM call metrics,
+//       and both Run buttons are shown (Run = OCR + LLM, Run LLM only).
+// false: the Data panel stays on the gallery, and only the RUN_MODE button is shown, labelled "Run".
+const DEV = false
+// Used when DEV is false. Set VITE_RUN_MODE in app/.env.local: "hybrid" (OCR + LLM, default) or "llm_only".
+const RUN_MODE = import.meta.env.VITE_RUN_MODE === 'llm_only' ? 'llm_only' : 'hybrid'
+
 // Must match the API's preprocessing limits (JPEG/PNG, smaller than 20 MB).
 const ACCEPTED_TYPES = ['image/jpeg', 'image/png']
 const MAX_BYTES = 20 * 1024 * 1024
@@ -34,12 +41,13 @@ async function callApi(path, options) {
 }
 
 // XMLHttpRequest instead of fetch, because fetch cannot report upload progress.
-function uploadImage(file, onProgress) {
+// path: '/api/images' (OCR + LLM) or '/api/llm-images' (LLM only, no OCR models).
+function uploadImage(file, onProgress, path = '/api/images') {
   return new Promise((resolve, reject) => {
     const body = new FormData()
     body.append('file', file, file.name || 'photo.jpg')
     const xhr = new XMLHttpRequest()
-    xhr.open('POST', '/api/images')
+    xhr.open('POST', path)
     xhr.responseType = 'json'
     xhr.timeout = REQUEST_TIMEOUT_MS
     xhr.upload.onprogress = (event) => {
@@ -275,6 +283,8 @@ function App() {
   const captureInputRef = useRef(null)
   const [previewUrl, setPreviewUrl] = useState('')
   const [pendingFile, setPendingFile] = useState(null)
+  // The picked photo, kept after a saved result is shown (pendingFile is cleared then), for "Run LLM only".
+  const [selectedFile, setSelectedFile] = useState(null)
   const [message, setMessage] = useState('')
   const [isError, setIsError] = useState(false)
   const [isDragging, setIsDragging] = useState(false)
@@ -376,6 +386,7 @@ function App() {
     setSelectedIssue(null)
     setShowDetectionDetails(false)
     setPendingFile(null)
+    setSelectedFile(null)
     setPhase('idle')
     setImageId('')
     setWarnings([])
@@ -402,6 +413,7 @@ function App() {
     recordUploadRef.current = record
     setPreviewUrl(URL.createObjectURL(nextFile))
     setPendingFile(nextFile)
+    setSelectedFile(nextFile)
     const version = ++requestVersion.current
     setPhase('loading')
     try {
@@ -474,7 +486,7 @@ function App() {
       setUploadedIds((ids) => ids.includes(body.image_id) ? ids : [...ids, body.image_id])
     }
     setResult(body)
-    setShowDetectionDetails(true)
+    setShowDetectionDetails(DEV)
     setPhase('done')
     showMessage('')
   }
@@ -586,6 +598,24 @@ function App() {
     if (result) {
       runRequest(() => callApi(`/images/${imageId}/analyse`, { method: 'POST' }), 'done', 'Detecting handwriting and reading it with the LLM…', { record: recordUploadRef.current })
     }
+  }
+
+  // Send the photo straight to the LLM: no preprocessing, PaddleOCR or word boxes.
+  const analyseLlmOnly = () => {
+    if (isWorking || (!selectedFile && !imageId)) return
+    setTotalMs(null)
+    if (!selectedFile) {
+      // Already uploaded (gallery or page reload): the server reuses the photo it stored.
+      runRequest(() => callApi(`/images/${imageId}/llm-only`, { method: 'POST' }), 'done',
+        'Reading it with the LLM (no OCR)…', { record: recordUploadRef.current })
+      return
+    }
+    runRequest(async () => {
+      const upload = await shrinkForUpload(selectedFile)
+      return uploadImage(upload, (done) =>
+        showMessage(done < 1 ? `Uploading… ${Math.round(done * 100)}%` : 'Reading it with the LLM (no OCR)…'),
+      '/api/llm-images')
+    }, 'idle', 'Preparing the photo…', { record: recordUploadRef.current })
   }
 
   const clearSelection = () => {
@@ -712,7 +742,7 @@ function App() {
                   )}
                   <div>
                     <dt>Detector</dt>
-                    <dd>{result.detector === 'easyocr' ? 'EasyOCR' : result.detector === 'paddle' ? 'PaddleOCR' : 'None'}</dd>
+                    <dd>{result.detector === 'easyocr' ? 'EasyOCR' : result.detector === 'paddle' ? 'PaddleOCR' : result.detector === 'llm' ? 'LLM only (no OCR)' : 'None'}</dd>
                   </div>
                   {result.serverMs != null && (
                     <div>
@@ -789,7 +819,13 @@ function App() {
 
         <WorkspacePanel title="Result" imageId={imageId} busy={isWorking} collapsed={false} actions={
           <>
-          <Button label="Run" variant="primary" isDisabled={(!pendingFile && !result) || isWorking} onClick={analyseImage} />
+          {(DEV || RUN_MODE === 'hybrid') && (
+            <Button label="Run" variant="primary" isDisabled={(!pendingFile && !result) || isWorking} onClick={analyseImage} />
+          )}
+          {(DEV || RUN_MODE === 'llm_only') && (
+            <Button label={DEV ? 'Run LLM only' : 'Run'} variant={DEV ? undefined : 'primary'}
+              isDisabled={(!selectedFile && !imageId) || isWorking} onClick={analyseLlmOnly} />
+          )}
                 {result?.words_annotated_url && (
                   <details className="preview-filter">
                     <summary className="view-toggle" aria-label="Overlay filters" title="Overlay filters">

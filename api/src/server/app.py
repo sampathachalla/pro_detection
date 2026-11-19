@@ -20,6 +20,7 @@ from api.src.features.handwritten_content_detection import (
     HandwrittenContentDetector,
 )
 from api.src.features.preprocessing import ErrorCode, PreprocessingError, PreprocessingPipeline, Status
+from api.src.features.llm_boxing import LLMBoxing
 from api.src.features.llm_handwritten_recognition import LLMHandwritingRecognizer
 from api.src.features.spelling_check import SpellingChecker
 from api.src.features.word_box_draw import WordBoxDrawer
@@ -103,6 +104,7 @@ def create_app(
     word_drawer = word_drawer or WordBoxDrawer(detector)
     llm_recognizer = LLMHandwritingRecognizer(detector)
     spelling_checker = SpellingChecker(word_drawer)
+    llm_boxing = LLMBoxing(preprocessing)
     max_bytes = preprocessing.config.max_bytes
     # One image at a time: the container has 1 CPU and the model predictors are not thread-safe.
     work_lock = threading.Lock()
@@ -177,9 +179,12 @@ def create_app(
         length = request.headers.get("content-length", "")
         if length.isdigit() and int(length) > max_bytes + MULTIPART_OVERHEAD:
             return _error(ErrorCode.TOO_LARGE, f"The file must be smaller than {max_bytes // (1024 * 1024)} MB.")
-        timer = _Timer()
         data = file.file.read(max_bytes)  # never more than the limit; the pipeline rejects >= max_bytes
-        filename = (file.filename or "")[:255] or None
+        return run_ocr_upload(data, (file.filename or "")[:255] or None)
+
+    def run_ocr_upload(data: bytes, filename: str | None) -> JSONResponse:
+        """Full flow for new image bytes: preprocessing, PaddleOCR, word boxes, then both LLM calls."""
+        timer = _Timer()
         with work_lock:
             timer.mark("wait")  # time queued behind another image
             pre = preprocessing.submit(data, filename=filename)
@@ -194,6 +199,34 @@ def create_app(
         llm = run_llm(pre.image_id)
         timer.mark("llm")
         return timer.respond({**_done(detection.result, pre.warnings, words.result), "llm": llm}, pre.image_id)
+
+    @app.post("/api/llm-images")
+    def upload_llm_only(request: Request, file: UploadFile = File(...)):
+        """LLM only: no preprocessing, PaddleOCR or word boxes. Two parallel LLM calls on the plain photo:
+        the text, and the misspelled words with boxes drawn around them."""
+        length = request.headers.get("content-length", "")
+        if length.isdigit() and int(length) > max_bytes + MULTIPART_OVERHEAD:
+            return _error(ErrorCode.TOO_LARGE, f"The file must be smaller than {max_bytes // (1024 * 1024)} MB.")
+        timer = _Timer()
+        data = file.file.read(max_bytes)
+        filename = (file.filename or "")[:255] or None
+        # No work_lock: nothing here uses the CPU models, so it doesn't wait behind OCR uploads.
+        result = llm_boxing.analyse(data, filename=filename)
+        timer.mark("llm")
+        return timer.respond(result, result["image_id"])
+
+    @app.post("/api/images/{image_id}/llm-only")
+    def llm_only_stored(image_id: str):
+        """LLM only on a photo already uploaded (the browser no longer has the file). Returns a new image_id."""
+        timer = _Timer()
+        result = llm_boxing.analyse_stored(image_id)
+        timer.mark("llm")
+        return timer.respond(result, result["image_id"])
+
+    @app.get("/api/llm-images/{image_id}/boxed.jpg")
+    def llm_boxed_image(image_id: str):
+        return Response(llm_boxing.load_boxed(image_id), media_type="image/jpeg",
+                        headers={"Cache-Control": "private, max-age=3600"})
 
     @app.post("/api/images/{image_id}/confirm")
     def confirm(image_id: str):
@@ -213,7 +246,12 @@ def create_app(
 
     @app.post("/api/images/{image_id}/analyse")
     def analyse(image_id: str):
-        """Run detection and LLM analysis again for a ready image."""
+        """Run detection and LLM analysis again for a ready image.
+
+        For an LLM-only image (never preprocessed) its stored photo goes through the full OCR flow as a
+        new upload, so the response has a new image_id."""
+        if llm_boxing.get_result(image_id) is not None:
+            return run_ocr_upload(llm_boxing.load_original(image_id), None)
         timer = _Timer()
         with work_lock:
             timer.mark("wait")
@@ -235,6 +273,9 @@ def create_app(
 
     @app.get("/api/images/{image_id}")
     def get_image(image_id: str):
+        llm_only = llm_boxing.get_result(image_id)
+        if llm_only is not None:  # analysed with "Run LLM only": no manifest, OCR or word boxes
+            return llm_only
         manifest = preprocessing.get_manifest(image_id)
         warnings = manifest["quality"]["warnings"]
         if manifest["status"] == Status.NEEDS_REVIEW:

@@ -35,6 +35,15 @@ The API container must be running: `docker compose up -d` in the project root.
 
 To seed the Data panel with images already uploaded to the same OCR backend, add their comma-separated IDs to `VITE_TEST_IMAGE_IDS` in `app/.env.local` and restart Vite. An image ID is the value after `?image=` when viewing a saved result. The gallery also remembers completed uploads in the current browser. Saved images are available while the backend retains them.
 
+**Dev view and run mode.** `DEV` at the top of `src/App.jsx` switches the developer view:
+
+| `DEV` | Data panel after processing | Run buttons |
+|---|---|---|
+| `true` | Detection details and LLM call metrics | both: **Run** (OCR + LLM) and **Run LLM only** |
+| `false` | the gallery | one **Run** button, chosen by `VITE_RUN_MODE` |
+
+Set `VITE_RUN_MODE` in `app/.env.local` to `hybrid` (OCR + LLM, the default) or `llm_only` (photo straight to the LLM, no OCR models), then restart Vite.
+
 Add JPG, JPEG, or PNG files directly to `app/resources/` to show them in Discover. Selecting a sample runs the normal OCR upload flow. Rebuild the frontend to include new files in a production deployment.
 
 ## Evaluate sample spelling

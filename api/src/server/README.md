@@ -5,6 +5,7 @@ HTTP API (FastAPI and uvicorn) that connects the web app to the features:
 ```
 web app (app/) ──/api/*──▶ Vite proxy ──▶ this server :8000 ──▶ features/preprocessing ──▶ features/handwritten_content_detection ──▶ features/word_box_draw
                                                                     then in parallel ──▶ features/llm_handwritten_recognition + features/spelling_check
+                                                  /api/llm-images ──▶ features/llm_boxing (LLM only: two parallel LLM calls, no OCR models)
 ```
 
 It only handles HTTP: reading uploads, mapping errors to HTTP status codes and serving files. All the logic lives in `features/`.
@@ -35,8 +36,12 @@ uvicorn api.src.server.app:create_app --factory --host 0.0.0.0 --port 8000
 | `GET /api/health` | none | `{"status": "ok"}` |
 | `POST /api/images` | `multipart/form-data` with field `file` (JPEG or PNG, smaller than 20 MB) | `200` with a **done** or **needs_review** body (below) |
 | `POST /api/images/{id}/confirm` | none. The user chose **Continue anyway**. | `200` **done** |
+| `POST /api/images/{id}/analyse` | none. The web app's **Run** on an image already shown. | `200` **done**: detection, word boxes and both LLM calls run again. For an LLM-only image, its stored photo goes through the full flow as a new upload (**new** `image_id`, may be **needs_review**). |
 | `DELETE /api/images/{id}` | none. The user chose **Retake**. | `204`, and every file for that image is deleted |
-| `GET /api/images/{id}` | none | the current **done** or **needs_review** body |
+| `GET /api/images/{id}` | none | the current **done** or **needs_review** body (for an LLM-only image, its saved LLM-only body) |
+| `POST /api/llm-images` | `multipart/form-data` with field `file` (same limits) | `200` **done** body with `"mode": "llm_only"`, `"detector": "llm"`, `llm.transcription` and `llm.spelling` (each mistake has `bbox`); no preprocessing, PaddleOCR or word boxes, and no model lock. See [`features/llm_boxing`](../features/llm_boxing/README.md). |
+| `POST /api/images/{id}/llm-only` | none | LLM only on a photo already uploaded (OCR or LLM-only), using the stored original. `200` **done** body like `POST /api/llm-images`, with a **new** `image_id`. |
+| `GET /api/llm-images/{id}/boxed.jpg` | none | `image/jpeg`: the photo with numbered **red** boxes around the misspelled words |
 | `GET /api/images/{id}/annotated.jpg` | none | `image/jpeg`: the photo with **green line** borders |
 | `GET /api/images/{id}/words.jpg` | none | `image/jpeg`: the photo with **green line** borders and **blue word** borders inside them |
 | `GET /api/docs` | none | Interactive API docs |
