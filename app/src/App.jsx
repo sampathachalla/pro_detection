@@ -29,6 +29,7 @@ async function callApi(path, options) {
   if (!response.ok) {
     throw Object.assign(new Error(errorMessage(body, response.status)), { status: response.status })
   }
+  if (body === null) return null
   return { ...body, serverMs: serverTotalMs(response.headers.get('Server-Timing')) }
 }
 
@@ -134,36 +135,93 @@ const defaultLayers = { numbers: true, word_boxes: true, line_boxes: true }
 const galleryKey = 'pro-detection.recent-images'
 const validImageId = (id) => typeof id === 'string' && /^[a-f0-9]{32}$/.test(id)
 const testImageIds = (import.meta.env.VITE_TEST_IMAGE_IDS || '').split(',').map((id) => id.trim()).filter(validImageId)
+const resourceImages = Object.entries(import.meta.glob([
+  '../resources/*.[jJ][pP][gG]',
+  '../resources/*.[jJ][pP][eE][gG]',
+  '../resources/*.[pP][nN][gG]',
+], {
+  eager: true,
+  query: '?url',
+  import: 'default',
+}))
 const panels = [{ title: 'Data', weight: 1 }, { title: 'Result', weight: 2 }, { title: 'Suggestion', weight: 1 }]
 
-function readRecentImages() {
+async function imageHash(file) {
+  const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer())
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
+async function resourceUploadHashes() {
+  const hashes = await Promise.all(resourceImages.map(async ([path, url]) => {
+    const response = await fetch(url)
+    if (!response.ok) throw new Error('Sample image unavailable')
+    const file = new File([await response.blob()], path.split('/').pop(), {
+      type: /\.png$/i.test(path) ? 'image/png' : 'image/jpeg',
+    })
+    const upload = await shrinkForUpload(file)
+    return imageHash(upload)
+  }))
+  return new Set(hashes)
+}
+
+function readRecentImages(key = galleryKey) {
   try {
-    const ids = JSON.parse(localStorage.getItem(galleryKey))
+    const ids = JSON.parse(localStorage.getItem(key))
     return Array.isArray(ids) ? [...new Set(ids.filter(validImageId))] : []
   } catch {
     return []
   }
 }
 
-function WorkspacePanel({ title, collapsed, onToggle, children }) {
+function HighlightedTranscript({ text, mistakes }) {
+  const phrases = [...new Set(mistakes.map((mistake) => mistake.wrong_spelling?.trim()).filter(Boolean))]
+    .sort((left, right) => right.length - left.length)
+  if (!phrases.length) return text
+  const alternatives = phrases.map((phrase) => phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')
+  const pattern = new RegExp(`(?<![\\p{L}\\p{N}_])(${alternatives})(?![\\p{L}\\p{N}_])`, 'giu')
+  return text.split(pattern).map((part, index) => index % 2 === 1
+    ? <span className="spelling-underline" key={index}>{part}</span>
+    : part)
+}
+
+function WorkspacePanel({ title, collapsed, onToggle, actions, imageId, showCollapse = false, busy = false, children }) {
   const contentId = `workspace-${title.toLowerCase()}`
   return (
-    <section className="workspace-panel min-w-0" aria-labelledby={`${contentId}-heading`}>
-      <h2 id={`${contentId}-heading`} className="panel-heading">
-        <Button
-          label={title}
-          variant="ghost"
-          width="100%"
-          aria-expanded={!collapsed}
-          aria-controls={contentId}
-          endContent={
-            <span className="panel-toggle-icon" aria-hidden="true">{collapsed ? '+' : '−'}</span>
-          }
-          onClick={onToggle}
-        />
+    <section className="workspace-panel min-w-0" hidden={title === 'Data' && collapsed} aria-labelledby={`${contentId}-heading`}>
+      <div className="panel-header">
+      <h2 id={`${contentId}-heading`} className={title === 'Suggestion' && collapsed ? 'visually-hidden' : 'panel-heading'}>
+        {title}{imageId && <span className="image-id panel-image-id">Image ID <span>{imageId}</span></span>}
       </h2>
-      <div id={contentId} hidden={collapsed} className="panel-content">
-        {children}
+      {(actions || showCollapse) && (
+        <div className="panel-actions">
+          {actions}
+          {showCollapse && <button
+            className="panel-collapse-button"
+            type="button"
+            aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${title}`}
+            aria-expanded={!collapsed}
+            aria-controls={contentId}
+            onClick={onToggle}
+          >
+            <svg className="sidebar-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="3" y="4" width="18" height="16" rx="2" />
+              <path d="M15 4v16" />
+            </svg>
+          </button>}
+        </div>
+      )}
+      </div>
+      <div id={contentId} hidden={collapsed} className="panel-content" aria-busy={busy}>
+        {busy ? (
+          <div className="panel-loading" role="status" aria-live="polite">
+            {title === 'Result' ? (
+              <span className="processing-icon" aria-hidden="true">⚙</span>
+            ) : (
+              <span className="loading-spinner" aria-hidden="true" />
+            )}
+            <p>{title === 'Result' ? 'Processing image…' : 'Loading analysis…'}</p>
+          </div>
+        ) : children}
       </div>
     </section>
   )
@@ -202,6 +260,7 @@ function App() {
   const uploadInputRef = useRef(null)
   const captureInputRef = useRef(null)
   const [previewUrl, setPreviewUrl] = useState('')
+  const [pendingFile, setPendingFile] = useState(null)
   const [message, setMessage] = useState('')
   const [isError, setIsError] = useState(false)
   const [isDragging, setIsDragging] = useState(false)
@@ -214,9 +273,38 @@ function App() {
   const [totalMs, setTotalMs] = useState(null)
   const startedAtRef = useRef(0)
   const requestVersion = useRef(0)
-  const [collapsed, setCollapsed] = useState({})
-  const [recentIds, setRecentIds] = useState(readRecentImages)
+  const recordUploadRef = useRef(false)
+  const [collapsed, setCollapsed] = useState({ Data: true })
+  const [showDetectionDetails, setShowDetectionDetails] = useState(false)
+  const [recentIds, setRecentIds] = useState(() => readRecentImages())
+  const [uploadedIds, setUploadedIds] = useState(() => readRecentImages('pro-detection.user-uploads'))
+  const legacyUploadIds = useRef(readRecentImages())
+  const [historyFiltered, setHistoryFiltered] = useState(false)
   const [missingIds, setMissingIds] = useState([])
+
+  useEffect(() => {
+    let cancelled = false
+    const filterHistory = async () => {
+      try {
+        const hashes = await resourceUploadHashes()
+        const entries = await Promise.allSettled(legacyUploadIds.current.map(async (id) => {
+          if (uploadedIds.includes(id)) return null
+          const body = await callApi(`/images/${id}`)
+          return hashes.has(body.source_sha256) ? id : null
+        }))
+        if (!cancelled) {
+          const samples = new Set(entries.filter((entry) => entry.status === 'fulfilled').map((entry) => entry.value).filter(Boolean))
+          setRecentIds((ids) => ids.filter((id) => !samples.has(id)))
+        }
+      } catch {
+        // Preserve saved entries when their source cannot be checked.
+      } finally {
+        if (!cancelled) setHistoryFiltered(true)
+      }
+    }
+    filterHistory()
+    return () => { cancelled = true }
+  }, [])
 
   useEffect(() => {
     try {
@@ -226,6 +314,14 @@ function App() {
     }
   }, [recentIds])
 
+  useEffect(() => {
+    try {
+      localStorage.setItem('pro-detection.user-uploads', JSON.stringify(uploadedIds))
+    } catch {
+      // Keep upload provenance available in this session.
+    }
+  }, [uploadedIds])
+
   const removeMissingImage = useCallback((id) => {
     setMissingIds((ids) => ids.includes(id) ? ids : [...ids, id])
     setRecentIds((ids) => ids.includes(id) ? ids.filter((entry) => entry !== id) : ids)
@@ -233,14 +329,15 @@ function App() {
 
   const togglePanel = (title) => setCollapsed((current) => ({ ...current, [title]: !current[title] }))
   const panelColumns = (row) => {
-    const allCollapsed = row.every(({ title }) => collapsed[title])
-    return row.map(({ title, weight }) =>
-      collapsed[title] && !allCollapsed ? '9rem' : `minmax(0, ${allCollapsed ? 1 : weight}fr)`,
+    const visiblePanels = row.filter(({ title }) => title !== 'Data' || !collapsed.Data)
+    const allCollapsed = visiblePanels.every(({ title }) => collapsed[title])
+    return visiblePanels.map(({ title, weight }) =>
+      title === 'Data' ? 'clamp(16rem, 25vw, 24rem)' : collapsed[title] && !allCollapsed ? '9rem' : `minmax(0, ${allCollapsed ? 1 : weight}fr)`,
     ).join(' ')
   }
   const galleries = [
-    { title: 'Samples', prefix: 'Sample', ids: [...new Set(testImageIds)].filter((id) => !missingIds.includes(id)), empty: 'No samples available.' },
-    { title: 'Upload history', prefix: 'Upload', ids: recentIds.filter((id) => !testImageIds.includes(id)), empty: 'Your uploads will appear here.' },
+    { title: 'Discover', prefix: 'Sample', ids: [...new Set(testImageIds)].filter((id) => !missingIds.includes(id)), images: resourceImages, empty: 'No samples available.' },
+    { title: 'Upload history', prefix: 'Upload', ids: historyFiltered ? recentIds.filter((id) => !testImageIds.includes(id)) : [], empty: historyFiltered ? 'Your uploads will appear here.' : 'Loading upload history…' },
   ]
 
   useEffect(
@@ -256,6 +353,8 @@ function App() {
   }
 
   const resetResult = () => {
+    setShowDetectionDetails(false)
+    setPendingFile(null)
     setPhase('idle')
     setImageId('')
     setWarnings([])
@@ -265,7 +364,7 @@ function App() {
     rememberImage('')
   }
 
-  const selectFile = (nextFile) => {
+  const selectFile = async (nextFile, record = true) => {
     if (phase === 'working' || !nextFile) return
     showMessage('')
 
@@ -279,23 +378,55 @@ function App() {
     }
 
     resetResult()
+    recordUploadRef.current = record
     setPreviewUrl(URL.createObjectURL(nextFile))
-    runRequest(
-      async () => {
-        const upload = await shrinkForUpload(nextFile)
-        return uploadImage(upload, (done) =>
-          showMessage(done < 1 ? `Uploading… ${Math.round(done * 100)}%` : 'Detecting handwriting and reading it with the LLM…'),
-        )
-      },
-      'idle',
-      'Preparing the photo…',
-      { record: true },
-    )
+    setPendingFile(nextFile)
+    const version = ++requestVersion.current
+    setPhase('loading')
+    try {
+      const upload = await shrinkForUpload(nextFile)
+      const sha256 = await imageHash(upload)
+      const saved = await callApi(`/image-analysis?${new URLSearchParams({ sha256 })}`)
+      if (version !== requestVersion.current) return
+      if (saved) {
+        startedAtRef.current = performance.now()
+        applyResponse(saved, record)
+      } else {
+        setPhase('idle')
+      }
+    } catch {
+      if (version !== requestVersion.current) return
+      setPhase('idle')
+      showMessage('Saved analysis could not be checked. Click Run to run this image.')
+    }
   }
 
   const handleFileChange = (event) => {
     selectFile(event.target.files[0])
     event.target.value = ''
+  }
+
+  const selectResourceImage = async (name, url) => {
+    if (isWorking) return
+    const version = ++requestVersion.current
+    setPhase('working')
+    showMessage('Loading sample image…')
+    let file
+    try {
+      const response = await fetch(url)
+      if (!response.ok) throw new Error()
+      file = new File([await response.blob()], name, {
+        type: /\.png$/i.test(name) ? 'image/png' : 'image/jpeg',
+      })
+    } catch {
+      if (version !== requestVersion.current) return
+      setPhase(phase)
+      showMessage('Could not load this sample image.', true)
+      return
+    }
+    if (version !== requestVersion.current) return
+    setPhase(phase)
+    selectFile(file, false)
   }
 
   const handleDrop = (event) => {
@@ -305,6 +436,10 @@ function App() {
   }
 
   const applyResponse = (body, record) => {
+    if (!validImageId(body?.image_id) || (body.status !== 'needs_review' && (body.status !== 'done' || !body.image))) {
+      throw new Error('The server returned an incomplete analysis. Please try again.')
+    }
+    setPendingFile(null)
     setImageId(body.image_id)
     rememberImage(body.image_id)
     setWarnings(body.warnings || [])
@@ -315,8 +450,10 @@ function App() {
     }
     if (record && validImageId(body.image_id)) {
       setRecentIds((ids) => [body.image_id, ...ids.filter((id) => id !== body.image_id)])
+      setUploadedIds((ids) => ids.includes(body.image_id) ? ids : [...ids, body.image_id])
     }
     setResult(body)
+    setShowDetectionDetails(true)
     setPhase('done')
     showMessage('')
   }
@@ -337,7 +474,7 @@ function App() {
   const spelling = result?.llm?.spelling
   const spellingIssues = spelling?.mistakes ?? []
   const resultImageUrl = result?.words_annotated_url
-    ? `${result.words_annotated_url}?${new URLSearchParams({ ...layers, spelling: spellingIssues.length > 0 })}`
+    ? `${result.words_annotated_url}?${new URLSearchParams({ ...layers, spelling: spellingIssues.length > 0, crop_to_text: true })}`
     : result?.annotated_url
 
   const runRequest = async (request, phaseOnError, startMessage, { record = false, saved = '' } = {}) => {
@@ -365,6 +502,7 @@ function App() {
   const selectSavedImage = (id, record = false) => {
     if (!validImageId(id)) return
     resetResult()
+    recordUploadRef.current = uploadedIds.includes(id)
     rememberImage(id)
     setImageId(id)
     setPreviewUrl('')
@@ -374,7 +512,7 @@ function App() {
   // Reopen the active image after a page reload.
   useEffect(() => {
     const saved = savedImageId()
-    if (saved) selectSavedImage(saved, true)
+    if (saved) selectSavedImage(saved)
     return () => { requestVersion.current += 1 }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -384,8 +522,25 @@ function App() {
       () => callApi(`/images/${imageId}/confirm`, { method: 'POST' }),
       'review',
       'Detecting handwriting and reading it with the LLM…',
-      { record: true },
+      { record: recordUploadRef.current },
     )
+
+  const analyseImage = () => {
+    if (isWorking) return
+    setTotalMs(null)
+    if (pendingFile) {
+      runRequest(async () => {
+        const upload = await shrinkForUpload(pendingFile)
+        return uploadImage(upload, (done) =>
+          showMessage(done < 1 ? `Uploading… ${Math.round(done * 100)}%` : 'Detecting handwriting and reading it with the LLM…'),
+        )
+      }, 'idle', 'Preparing the photo…', { record: recordUploadRef.current })
+      return
+    }
+    if (result) {
+      runRequest(() => callApi(`/images/${imageId}/analyse`, { method: 'POST' }), 'done', 'Detecting handwriting and reading it with the LLM…', { record: recordUploadRef.current })
+    }
+  }
 
   const clearSelection = () => {
     resetResult()
@@ -415,25 +570,20 @@ function App() {
     <main className="app-shell">
       <header className="topbar">
         <div className="topbar-brand">
-          {(previewUrl || result) && (
-            <button
-              className="back-button"
-              type="button"
-              disabled={isWorking}
-              onClick={phase === 'review' ? retake : clearSelection}
-              aria-label="Back to upload"
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M15 18l-6-6 6-6" />
-              </svg>
-              Back
-            </button>
-          )}
+          <button className="panel-collapse-button" type="button"
+            aria-label={`${collapsed.Data ? 'Expand' : 'Collapse'} Data`}
+            title={`${collapsed.Data ? 'Expand' : 'Collapse'} Data`}
+            aria-expanded={!collapsed.Data} aria-controls="workspace-data"
+            onClick={() => togglePanel('Data')}>
+            <svg className="sidebar-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="3" y="4" width="18" height="16" rx="2" />
+              <path d="M9 4v16" />
+            </svg>
+          </button>
           <a className="wordmark" href="/" aria-label="Handwriting home">
             Pro Detection
           </a>
         </div>
-        <p className="topbar-note">Text detection workspace</p>
       </header>
 
       <section
@@ -446,7 +596,7 @@ function App() {
       >
         <WorkspacePanel title="Data" collapsed={collapsed.Data} onToggle={() => togglePanel('Data')}>
           <div
-            className={`upload-area flex flex-wrap justify-center gap-2${isDragging ? ' is-dragging' : ''}`}
+            className={`upload-area flex flex-wrap ${showDetectionDetails ? 'justify-start' : 'justify-center'} gap-2${isDragging ? ' is-dragging' : ''}`}
             onDragOver={(event) => {
               event.preventDefault()
               setIsDragging(true)
@@ -456,8 +606,14 @@ function App() {
             }}
             onDrop={handleDrop}
           >
-            <Button label="Upload image" size="lg" width="min(100%, 10rem)" variant="primary" isDisabled={isWorking} onClick={() => uploadInputRef.current?.click()} />
-            <Button label="Capture image" size="lg" width="min(100%, 10rem)" isDisabled={isWorking} onClick={() => captureInputRef.current?.click()} />
+            {showDetectionDetails ? (
+              <Button label="Back" variant="primary" onClick={() => setShowDetectionDetails(false)} />
+            ) : (
+              <>
+                <Button label="Upload image" size="lg" width="min(100%, 10rem)" variant="primary" isDisabled={isWorking} onClick={() => uploadInputRef.current?.click()} />
+                <Button label="Capture image" size="lg" width="min(100%, 10rem)" isDisabled={isWorking} onClick={() => captureInputRef.current?.click()} />
+              </>
+            )}
           </div>
           {phase === 'review' && warnings.length > 0 && (
             <div>
@@ -493,93 +649,11 @@ function App() {
             </div>
           )}
 
-          <p className={`status-message${isError ? '' : ' is-info'}`} role="status" aria-live="polite" hidden={!message}>
-            {message}
-          </p>
-          {galleries.map(({ title, prefix, ids, empty }) => (
-            <section key={prefix} className="image-gallery" aria-labelledby={`gallery-${prefix.toLowerCase()}`}>
-              <h3 id={`gallery-${prefix.toLowerCase()}`}>{title}</h3>
-              {ids.length ? (
-                <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,5rem),1fr))] gap-2">
-                  {ids.map((id, index) => (
-                    <GalleryTile
-                      key={id}
-                      id={id}
-                      label={`${prefix} ${index + 1}`}
-                      selected={imageId === id}
-                      disabled={phase === 'working'}
-                      onSelect={selectSavedImage}
-                      onMissing={removeMissingImage}
-                      thumbnail={imageId === id ? result?.annotated_url : undefined}
-                    />
-                  ))}
-                </div>
-              ) : <p className="panel-copy">{empty}</p>}
-            </section>
-          ))}
-        </WorkspacePanel>
-
-        <WorkspacePanel title="Result" collapsed={collapsed.Result} onToggle={() => togglePanel('Result')}>
-          <div
-            className={`document-stage${result ? ' has-result' : ''}${isDragging ? ' is-dragging' : ''}`}
-            onDragEnter={(event) => {
-              event.preventDefault()
-              setIsDragging(true)
-            }}
-            onDragOver={(event) => event.preventDefault()}
-            onDragLeave={(event) => {
-              if (!event.currentTarget.contains(event.relatedTarget)) setIsDragging(false)
-            }}
-            onDrop={handleDrop}
-            aria-busy={isWorking}
-          >
-            {result ? (
-              <div className="document-result">
-                {result.words_annotated_url && (
-                  <div className="preview-toggles" role="group" aria-label="Overlay filters">
-                    {previewLayers.map(({ key, label, path }) => (
-                      <button
-                        key={key}
-                        className="view-toggle"
-                        data-layer={key}
-                        type="button"
-                        aria-pressed={layers[key]}
-                        onClick={() => setLayers((current) => ({ ...current, [key]: !current[key] }))}
-                      >
-                        <svg viewBox="0 0 24 24" aria-hidden="true">
-                          <path d={path} />
-                        </svg>
-                        {label}
-                      </button>
-                    ))}
-                  </div>
-                )}
-                <img
-                  key={resultImageUrl}
-                  src={resultImageUrl}
-                  alt="Handwritten document preview"
-                  onLoad={resultLoaded}
-                  onError={() => showMessage('The preview could not be loaded. Select the image again to retry.', true)}
-                />
-              </div>
-            ) : previewUrl ? (
-              <img src={previewUrl} alt="Selected handwritten document" />
-            ) : (
-              <div className="empty-document">
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M7 3.75h7l3 3v13.5H7z" />
-                  <path d="M14 3.75v3h3M9.5 11h5M9.5 14h5M9.5 17h3" />
-                </svg>
-                <p>{phase === 'loading' ? 'Loading saved image…' : 'Select or upload an image to preview it.'}</p>
-              </div>
-            )}
-          </div>
-
-          {result && (
+          {showDetectionDetails && result && (
             <div className="detection-summary">
               <p className="status-message is-info" role="status" hidden={!detectionSummary}>{detectionSummary}</p>
-              <details className="result-details" key={imageId}>
-                <summary>Detection details</summary>
+              <section className="result-details" aria-labelledby="detection-details-heading" key={imageId}>
+                <h3 id="detection-details-heading">Detection details</h3>
                 <dl className="file-details">
                   <div>
                     <dt>Handwritten lines</dt>
@@ -620,29 +694,146 @@ function App() {
                     </div>
                   ))}
                 </dl>
-              </details>
+              </section>
             </div>
           )}
+          <div hidden={showDetectionDetails} className="data-gallery-content">
+          {galleries.map(({ title, prefix, ids, images = [], empty }) => (
+            <section key={prefix} className="image-gallery" aria-labelledby={`gallery-${prefix.toLowerCase()}`}>
+              <h3 id={`gallery-${prefix.toLowerCase()}`}>{title}</h3>
+              {ids.length || images.length ? (
+                <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,5rem),1fr))] gap-2">
+                  {images.map(([path, url]) => {
+                    const name = path.slice(path.lastIndexOf('/') + 1)
+                    return (
+                      <GalleryTile
+                        key={path}
+                        id={path}
+                        label={name}
+                        disabled={isWorking}
+                        onSelect={() => selectResourceImage(name, url)}
+                        thumbnail={url}
+                      />
+                    )
+                  })}
+                  {ids.map((id, index) => (
+                    <GalleryTile
+                      key={id}
+                      id={id}
+                      label={`${prefix} ${index + 1}`}
+                      selected={imageId === id}
+                      disabled={phase === 'working'}
+                      onSelect={selectSavedImage}
+                      onMissing={removeMissingImage}
+                      thumbnail={imageId === id ? result?.annotated_url : undefined}
+                    />
+                  ))}
+                </div>
+              ) : <p className="panel-copy">{empty}</p>}
+            </section>
+          ))}
+          </div>
         </WorkspacePanel>
 
-        <WorkspacePanel title="Suggestion" collapsed={collapsed.Suggestion} onToggle={() => togglePanel('Suggestion')}>
-          {!result && (
-            <p className="panel-copy">
-              {isWorking ? 'Loading analysis…' : 'Select an image or confirm an upload to see its analysis.'}
-            </p>
-          )}
-          {result && !transcription && !spelling && (
-            <p className="panel-copy">No saved analysis is available for this image.</p>
-          )}
+        <WorkspacePanel title="Result" imageId={imageId} busy={isWorking} collapsed={false} actions={
+          <>
+          <Button label="Run" variant="primary" isDisabled={(!pendingFile && !result) || isWorking} onClick={analyseImage} />
+                {result?.words_annotated_url && (
+                  <details className="preview-filter">
+                    <summary className="view-toggle" aria-label="Overlay filters" title="Overlay filters">
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M4 5h16l-6 7v6l-4 2v-8z" />
+                      </svg>
+                    </summary>
+                  <div className="preview-toggles" role="group" aria-label="Overlay filters">
+                    {previewLayers.map(({ key, label, path }) => (
+                      <button
+                        key={key}
+                        className="view-toggle"
+                        data-layer={key}
+                        type="button"
+                        aria-pressed={layers[key]}
+                        onClick={() => setLayers((current) => ({ ...current, [key]: !current[key] }))}
+                      >
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                          <path d={path} />
+                        </svg>
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  </details>
+                )}
+          </>
+
+        }>
+          <div className={result ? 'result-layout' : undefined}>
+          <div className={result ? 'result-card' : undefined}>
+          <div
+            className={`document-stage${result ? ' has-result' : ''}${isDragging ? ' is-dragging' : ''}`}
+            onDragEnter={(event) => {
+              event.preventDefault()
+              setIsDragging(true)
+            }}
+            onDragOver={(event) => event.preventDefault()}
+            onDragLeave={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget)) setIsDragging(false)
+            }}
+            onDrop={handleDrop}
+            aria-busy={isWorking}
+          >
+            {result ? (
+              <div className="document-result">
+                <img
+                  key={resultImageUrl}
+                  src={resultImageUrl}
+                  alt="Handwritten document preview"
+                  onLoad={resultLoaded}
+                  onError={() => showMessage('The preview could not be loaded. Select the image again to retry.', true)}
+                />
+              </div>
+            ) : previewUrl ? (
+              <img src={previewUrl} alt="Selected handwritten document" />
+            ) : (
+              <div className="empty-document">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M7 3.75h7l3 3v13.5H7z" />
+                  <path d="M14 3.75v3h3M9.5 11h5M9.5 14h5M9.5 17h3" />
+                </svg>
+                <p>{phase === 'loading' ? 'Loading saved image…' : 'Select or upload an image to preview it.'}</p>
+              </div>
+            )}
+          </div>
+
+          <p className={`status-message${isError ? '' : ' is-info'}`} role="status" aria-live="polite" hidden={!message}>
+            {message}
+          </p>
+
+
+          </div>
+
           {transcription && (
-            <details className="result-details" open key={`text-${imageId}`}>
-              <summary>Text</summary>
+            <section className="result-details extracted-text" aria-label="Extracted text" key={`text-${imageId}`}>
               {transcription.status === 'failed' ? (
                 <p className="status-message">{transcription.error?.message || 'Transcription is unavailable.'}</p>
               ) : (
-                <p className="transcript">{transcription.text || 'No text was read.'}</p>
+                <p className="transcript"><HighlightedTranscript text={transcription.text || 'No text was read.'} mistakes={spellingIssues} /></p>
               )}
-            </details>
+            </section>
+          )}
+          </div>
+        </WorkspacePanel>
+
+        <WorkspacePanel title="Suggestion" showCollapse busy={isWorking} collapsed={collapsed.Suggestion} onToggle={() => togglePanel('Suggestion')}>
+          {!result && (
+            <>
+              <p className="panel-copy">
+                {pendingFile ? 'Click Run to analyse the selected image.' : 'Select an image to see its saved analysis.'}
+              </p>
+            </>
+          )}
+          {result && !transcription && !spelling && (
+            <p className="panel-copy">No saved analysis is available for this image.</p>
           )}
 
           {spelling && (

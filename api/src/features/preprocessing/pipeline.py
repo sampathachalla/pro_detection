@@ -171,6 +171,19 @@ class PreprocessingPipeline:
             raise PreprocessingError(ErrorCode.INVALID_STATE, f"Image is {manifest['status']}, not ready.")
         return load_image(self.storage.get(manifest["processed"]["key"]))
 
+    def matching_images(self, sha256: str) -> list[str]:
+        matches = []
+        for key in self.storage.list(f"{KEY_PREFIX}/"):
+            if not key.endswith("/manifest.json"):
+                continue
+            try:
+                manifest = json.loads(self.storage.get(key))
+            except FileNotFoundError:
+                continue
+            if manifest["source"].get("sha256") == sha256 and manifest["status"] == Status.READY:
+                matches.append((manifest["updated_at"], manifest["image_id"]))
+        return [image_id for _, image_id in sorted(matches, reverse=True)]
+
     def cleanup(self, now: float | None = None) -> int:
         """Delete images whose newest file is older than retention_hours. Returns how many."""
         cutoff = (now if now is not None else time.time()) - self.config.retention_hours * 3600

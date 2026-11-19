@@ -10,7 +10,7 @@ It uses no model. OpenCV splits each line at the gaps between words (`services/w
 draw(image_id)                       ← handwritten content detection must have run
  1. Load      detected line regions + original upright photo
  2. Crop      each line's bounding box; outside the line polygon → paper colour
- 3. Segment   gap > gap_ratio × text height = new word (word_segmentation_service)
+ 3. Segment   remove ruled paper lines, then gap > gap_ratio × small-letter height = new word (word_segmentation_service)
  4. Map back  crop coordinates → photo coordinates; drop boxes < min_word_area
  5. Draw      green PaddleOCR line borders, then thinner blue word borders on top (content_draw_service)
  6. Store     preprocessing/<id>/words_annotated.jpg + word_boxes.json
@@ -34,12 +34,12 @@ Files sit next to the image's other files, so `retake()` and the 24-hour cleanup
 
 | Setting | Default | Env override | Effect |
 |---|---|---|---|
-| `gap_ratio` | 0.35 | `WORDS_GAP_RATIO` | Gap wider than this × text height starts a new word. Lower splits more. |
+| `gap_ratio` | 0.45 | `WORDS_GAP_RATIO` | Gap wider than this × small-letter height starts a new word. Lower splits more. |
 | `min_word_area` | 30 px² | `WORDS_MIN_AREA` | Smaller boxes are dropped. |
 | `color` | `(230, 120, 0)` blue (BGR) | none | Word border colour, distinct from the green line borders. |
 | `show_lines` | `True` | `WORDS_SHOW_LINES=false` | Also draw the green PaddleOCR line borders under the word borders. |
 
-**Calibrated on a real phone photo** (16 lines): `0.35` gave exactly the right word count on every line: 5, 3, 4, 3, 3, 3 for the paragraph and 1 for each label. `0.25` split "Pro detection" into 5, and `0.45` merged it into 3.
+**Calibrated on a cursive page** (4 lines on ruled paper): small letters are 23–26 px tall, gaps between letters are at most 6 px, and gaps between words are 15–37 px. `0.45` puts the limit at 10–12 px and finds every word (5 per line). The old rule (`0.35` × full ink height) put the limit at about 34 px, because tall letters and tails made the height ~100 px, so each line split into only 2 boxes.
 
 ## `schemas.py`
 
@@ -49,7 +49,7 @@ Files sit next to the image's other files, so `retake()` and the 24-hour cleanup
 
 ```json
 {
-  "image_id": "…", "words_version": "1", "created_at": "…",
+  "image_id": "…", "words_version": "4", "created_at": "…",
   "count": 31, "lines": 16,
   "annotated_key": "preprocessing/<id>/words_annotated.jpg",
   "words": [{"line": 10, "points": [[x, y] x4], "bbox": [x0, y0, x1, y1]}]

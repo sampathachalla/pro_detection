@@ -34,3 +34,11 @@ npm run dev        # http://localhost:5173, /api proxied to localhost:8000
 The API container must be running: `docker compose up -d` in the project root.
 
 To seed the Data panel with images already uploaded to the same OCR backend, add their comma-separated IDs to `VITE_TEST_IMAGE_IDS` in `app/.env.local` and restart Vite. An image ID is the value after `?image=` when viewing a saved result. The gallery also remembers completed uploads in the current browser. Saved images are available while the backend retains them.
+
+Add JPG, JPEG, or PNG files directly to `app/resources/` to show them in Discover. Selecting a sample runs the normal OCR upload flow. Rebuild the frontend to include new files in a production deployment.
+
+## Evaluate sample spelling
+
+With the OCR API running on port 8000, run `python evaluate_spelling.py 1 10` from the project root. The range is inclusive. The script uploads those original JPEGs through the API, continues past preprocessing warnings, and compares the spelling predictions with `resources/test_results.json`, ignoring case and surrounding whitespace. When a prediction covers several words, the evaluator aligns the original and corrected text and scores the changed words.
+
+The report shows OCR line and word box counts, correct suggestions, wrong suggestions, missed words, and extra flags relative to the key. Detection recall and precision measure whether the expected words were flagged. The correction rate measures how many expected words received the right suggestion. Failed images appear separately and are excluded from the scores.

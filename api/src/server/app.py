@@ -11,7 +11,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, File, Request, UploadFile
+from fastapi import FastAPI, File, Query, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 
 from api.src.features.handwritten_content_detection import (
@@ -23,6 +23,7 @@ from api.src.features.preprocessing import ErrorCode, PreprocessingError, Prepro
 from api.src.features.llm_handwritten_recognition import LLMHandwritingRecognizer
 from api.src.features.spelling_check import SpellingChecker
 from api.src.features.word_box_draw import WordBoxDrawer
+from api.src.features.word_box_draw.config import WORDS_VERSION
 from api.src.services import paddle_service
 from api.src.services.openai_LLM_call import OpenAIRecognitionError
 
@@ -210,6 +211,22 @@ def create_app(
         timer.mark("llm")
         return timer.respond({**_done(detection.result, pre.warnings, words.result), "llm": llm}, image_id)
 
+    @app.post("/api/images/{image_id}/analyse")
+    def analyse(image_id: str):
+        """Run detection and LLM analysis again for a ready image."""
+        timer = _Timer()
+        with work_lock:
+            timer.mark("wait")
+            preprocessing.load_processed(image_id)
+            manifest = preprocessing.get_manifest(image_id)
+            detection = detector.detect(image_id)
+            timer.mark("detect")
+            words = word_drawer.draw(image_id)
+            timer.mark("words")
+        llm = run_llm(image_id)
+        timer.mark("llm")
+        return timer.respond({**_done(detection.result, manifest["quality"]["warnings"], words.result), "llm": llm}, image_id)
+
     @app.delete("/api/images/{image_id}", status_code=204)
     def retake(image_id: str):
         """User chose "retake": delete everything stored for this image."""
@@ -223,10 +240,25 @@ def create_app(
         if manifest["status"] == Status.NEEDS_REVIEW:
             return _needs_review(image_id, warnings)
         body = _done(detector.get_result(image_id), warnings, word_drawer.get_result(image_id))
+        body["source_sha256"] = manifest["source"].get("sha256")
         # Saved OpenAI results, so a page reload shows the text and mistakes again.
         saved = {"transcription": llm_recognizer.get_result(image_id), "spelling": spelling_checker.get_result(image_id)}
         llm = {name: {"status": "ok", **result} for name, result in saved.items() if result is not None}
         return {**body, "llm": llm} if llm else body
+
+    @app.get("/api/image-analysis")
+    def saved_analysis(sha256: str = Query(pattern="^[a-f0-9]{64}$")):
+        """Find saved analysis without running detection or calling an LLM."""
+        for image_id in preprocessing.matching_images(sha256):
+            try:
+                words = word_drawer.get_result(image_id)
+                if words is not None and words.get("words_version") != WORDS_VERSION:
+                    continue  # made by older word-box code: analyse the photo again instead of showing stale boxes
+                return get_image(image_id)
+            except (PreprocessingError, DetectionError):
+                # Cleanup or an incomplete previous run can leave no saved result.
+                continue
+        return None
 
     @app.get("/api/images/{image_id}/words.jpg")
     def words_image(

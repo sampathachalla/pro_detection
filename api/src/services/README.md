@@ -124,12 +124,14 @@ Pipeline: resize → grayscale → denoise → contrast boost (CLAHE) → option
 ## `word_segmentation_service.py`
 
 **What:** Word splitting for one line of handwriting (OpenCV, no model).
-**Does:** Separates ink from paper (Otsu thresholding, specks removed), then splits at runs of empty columns wider than `gap_ratio` × the text height.
+**Does:** Separates ink from paper (Otsu thresholding, specks removed), removes ruled paper lines (thin strokes longer than the crop is tall, slight slant allowed), then splits at runs of empty columns wider than `gap_ratio` × the small-letter height (the band where a, e, o, n sit). Tall letters and tails don't count, so cursive with long loops splits the same way as print. Boxes touching the crop edge that are thin or under 6% ink (paper edge, cut-off ruled-line pieces) are dropped.
 
 | Function | Input | Output |
 |---|---|---|
-| `segment_words(crop, gap_ratio=0.35, min_ink_fraction=0.002)` | BGR or grayscale crop of **one line** (dark text on light paper) | `[[x0, y0, x1, y1], ...]` word boxes in crop coordinates, left to right; `[]` if there's almost no ink |
+| `segment_words(crop, gap_ratio=0.45, min_ink_fraction=0.002)` | BGR or grayscale crop of **one line** (dark text on light paper) | `[[x0, y0, x1, y1], ...]` word boxes in crop coordinates, left to right; `[]` if there's almost no ink |
 | `ink_mask(crop)` | crop | `uint8` mask (255 = ink) with specks smaller than about 0.15% of the height² removed |
+| `remove_ruled_lines(ink)` | ink mask | the mask without horizontal strokes longer than the crop height (ruled lines); unchanged if there are none |
+| `small_letter_height(ink)` | ink mask | height of the rows holding at least half the ink of the fullest row (rows inked across more than 60% of the width, like ruled lines, are skipped); `0` if none |
 
 ---
 
