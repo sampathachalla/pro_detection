@@ -5,7 +5,7 @@ import './App.css'
 // true: after processing, the Data panel opens Detection details and LLM call metrics,
 //       and both Run buttons are shown (Run = OCR + LLM, Run LLM only).
 // false: the Data panel stays on the gallery, and only the RUN_MODE button is shown, labelled "Run".
-const DEV = false
+const DEV = true
 // Used when DEV is false. Set VITE_RUN_MODE in app/.env.local: "hybrid" (OCR + LLM, default) or "llm_only".
 const RUN_MODE = import.meta.env.VITE_RUN_MODE === 'llm_only' ? 'llm_only' : 'hybrid'
 
