@@ -92,4 +92,4 @@ uvicorn api.src.server.app:create_app --factory --host 0.0.0.0 --port 8000
 - **Published on `127.0.0.1:8000` only.** It isn't reachable from your local network directly.
 - **The web app reaches it through Vite's `/api` proxy** (`app/vite.config.js`, `API_PROXY_TARGET`).
 - **The mobile tunnel URL exposes `/api` publicly through that proxy, with no authentication.** That's fine for development; add authentication before sharing the URL widely.
-- **The container now has outbound network access** (needed to publish a port). It still never downloads models: EasyOCR has `download_enabled=False`, and PaddleX uses the built-in weights ("Model files already exist. Using cached files").
+- **The container now has outbound network access** (needed to publish a port). It still never downloads models: PaddleX uses the built-in weights ("Model files already exist. Using cached files").

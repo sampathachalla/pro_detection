@@ -21,7 +21,6 @@ from api.src.services.storage import LocalFileStorage
 from api.src.test_services.sample_images import png_bytes, text_image
 
 PADDLE = "api.src.services.paddle_service.detect"
-EASYOCR = "api.src.services.easyocr_service.detect"
 ORIENTATION = "api.src.services.orientation_service.classify"
 
 
@@ -55,13 +54,12 @@ class DetectorTestCase(unittest.TestCase):
 
 
 class TestDetectWithFakeModels(DetectorTestCase):
-    """Fast: the two detectors are replaced with fakes."""
+    """Fast: the detector is replaced with a fake."""
 
     def test_paddle_boxes_are_drawn_and_stored(self):
         image_id = self.ready_image()
-        with mock.patch(PADDLE, return_value=[box(20, 60, 300, 130)]), mock.patch(EASYOCR) as easy:
+        with mock.patch(PADDLE, return_value=[box(20, 60, 300, 130)]):
             result = self.detector.detect(image_id)
-        easy.assert_not_called()
         self.assertEqual(result.detector, Detector.PADDLE)
         self.assertEqual(result.regions[0]["bbox"], [20, 60, 300, 130])
         self.assertEqual(result.regions[0]["score"], 0.9)
@@ -70,18 +68,9 @@ class TestDetectWithFakeModels(DetectorTestCase):
         self.assertIn("annotated.jpg", self.files(image_id))
         self.assertIn("handwriting_detection.json", self.files(image_id))
 
-    def test_easyocr_fallback_when_paddle_finds_nothing(self):
-        image_id = self.ready_image()
-        with mock.patch(PADDLE, return_value=[]), mock.patch(EASYOCR, return_value=[box(20, 60, 300, 130, None)]) as easy:
-            result = self.detector.detect(image_id)
-        easy.assert_called_once()
-        self.assertEqual(easy.call_args.kwargs["width_ths"], 0.1)
-        self.assertEqual(result.detector, Detector.EASYOCR)
-        self.assertIsNone(result.regions[0]["score"])
-
     def test_nothing_found(self):
         image_id = self.ready_image()
-        with mock.patch(PADDLE, return_value=[]), mock.patch(EASYOCR, return_value=[]):
+        with mock.patch(PADDLE, return_value=[]):
             result = self.detector.detect(image_id)
         self.assertEqual(result.detector, Detector.NONE)
         self.assertEqual(result.result["count"], 0)
@@ -230,7 +219,7 @@ class TestDetectWithRealModels(DetectorTestCase):
     def test_real_handwriting_sample(self):
         image_id = self.ready_image()
         result = self.detector.detect(image_id)
-        self.assertIn(result.detector, (Detector.PADDLE, Detector.EASYOCR))
+        self.assertEqual(result.detector, Detector.PADDLE)
         self.assertGreater(result.result["count"], 0)
         h, w = text_image().shape[:2]
         for r in result.regions:

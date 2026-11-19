@@ -7,8 +7,8 @@ import numpy as np
 
 class Detector:
     PADDLE = "paddle"
-    EASYOCR = "easyocr"
-    NONE = "none"  # neither detector found handwriting
+    EASYOCR = "easyocr"  # no longer used (EasyOCR was removed); kept so older stored results still read
+    NONE = "none"  # PaddleOCR found no handwriting
 
 
 class DetectionErrorCode:

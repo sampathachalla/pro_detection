@@ -5,7 +5,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     OMP_NUM_THREADS=2 \
     PADDLE_PDX_CACHE_HOME=/app/models/paddlex \
     PADDLEOCR_HOME=/app/models/paddleocr \
-    EASYOCR_MODULE_PATH=/app/models/easyocr \
     STORAGE_BACKEND=local \
     STORAGE_ROOT=/app/data
 
@@ -20,16 +19,11 @@ WORKDIR /app
 COPY requirements.txt .
 
 RUN pip install --no-cache-dir \
-        --index-url https://download.pytorch.org/whl/cpu \
-        "torch==2.15.0+cpu" \
-        "torchvision==0.29.2+cpu" \
-    && pip install --no-cache-dir \
         --index-url https://www.paddlepaddle.org.cn/packages/stable/cpu/ \
         --extra-index-url https://pypi.org/simple \
         "paddlepaddle==3.2.0" \
     && pip install --no-cache-dir "paddleocr==3.7.0" \
     && pip uninstall -y opencv-contrib-python \
-    && pip install --no-cache-dir "easyocr==1.7.2" \
     && pip install --no-cache-dir "opencv-python-headless==5.0.0.93" \
     && pip install --no-cache-dir "numpy==2.3.5" "pillow==13.0.0" \
     && pip install --no-cache-dir "fastapi==0.163.1" "uvicorn==0.54.0" "python-multipart==0.0.34"
@@ -39,7 +33,7 @@ RUN find /usr/local/lib/python3.13/site-packages/paddlex \
         -exec sed -i 's/opencv-contrib-python/opencv-python-headless/g' {} +
 
 RUN useradd --create-home --uid 10001 app \
-    && mkdir -p /app/models/paddlex /app/models/paddleocr /app/models/easyocr /app/data \
+    && mkdir -p /app/models/paddlex /app/models/paddleocr /app/data \
     && chown -R app:app /app
 
 COPY --chown=app:app download_models.py test_ocr.py ./

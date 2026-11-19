@@ -9,8 +9,7 @@ Tests for [`features/handwritten_content_detection/`](../../features/handwritten
 
 | Group | Case | Expected |
 |---|---|---|
-| Fake models (fast) | Paddle finds a box | `detector="paddle"`, EasyOCR not called, green border drawn, `annotated.png` and JSON stored |
-| | Paddle finds nothing | EasyOCR is called with `width_ths=0.1` and `detector="easyocr"`; `score` is `None` |
+| Fake models (fast) | Paddle finds a box | `detector="paddle"`, green border drawn, `annotated.png` and JSON stored |
 | | Neither finds anything | `detector="none"`, count 0, image unchanged |
 | | 3200 px image (scale 0.5) | Boxes doubled back to original coordinates; annotated image is the original size |
 | | Tiny box | Dropped |
@@ -22,7 +21,7 @@ Tests for [`features/handwritten_content_detection/`](../../features/handwritten
 | | `get_result` before `detect` | `not_found` |
 | Helpers | `map_to_original` | Undoes scale and deskew; clips to the image |
 | | `reading_order` | Empty list works; sorts by line, then left to right |
-| Real models (slow, ~20 s) | Synthetic handwriting sample | At least one box, inside the image, from Paddle or EasyOCR |
+| Real models (slow, ~20 s) | Synthetic handwriting sample | At least one box, inside the image, from Paddle |
 
 Most of these tests turn the preprocessing quality warnings off so synthetic images go straight to `ready`. The `not_ready` test uses the default limits.
 

@@ -12,7 +12,6 @@ ANNOTATED_JPEG_QUALITY = 90
 @dataclass(frozen=True)
 class DetectionConfig:
     min_box_area: int = 50          # px² in the original image; smaller boxes are dropped as noise
-    easyocr_width_ths: float = 0.1  # EasyOCR fallback merge threshold (lower keeps words apart)
     line_tolerance: float = 0.5     # boxes whose centres differ by < this × median box height share a line
     column_max_crossing: float = 0.1  # a column gutter may be crossed by at most this share of the boxes
     column_min_lines: int = 3       # each column needs at least this many boxes
@@ -26,7 +25,6 @@ class DetectionConfig:
         default = cls()
         return cls(
             min_box_area=int(env("DETECT_MIN_BOX_AREA", default.min_box_area)),
-            easyocr_width_ths=float(env("DETECT_EASYOCR_WIDTH_THS", default.easyocr_width_ths)),
             line_tolerance=float(env("DETECT_LINE_TOLERANCE", default.line_tolerance)),
             column_max_crossing=float(env("DETECT_COLUMN_MAX_CROSSING", default.column_max_crossing)),
             column_min_lines=int(env("DETECT_COLUMN_MIN_LINES", default.column_min_lines)),

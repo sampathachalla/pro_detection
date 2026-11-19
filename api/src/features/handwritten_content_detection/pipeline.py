@@ -2,7 +2,7 @@
 
 detect(image_id)
   1. check     preprocessing status is "ready"
-  2. detect    PaddleOCR on the processed image; nothing found -> EasyOCR fallback
+  2. detect    PaddleOCR on the processed image (no fallback; nothing found -> detector "none")
      sideways  most boxes taller than wide -> orientation model picks the turn,
                preprocessing turns the page, detect again
   3. map back  processed coordinates -> original upright photo (undo deskew, divide by scale)
@@ -19,7 +19,7 @@ import numpy as np
 
 from api.src.features.preprocessing import PreprocessingError, PreprocessingPipeline, Status
 from api.src.features.preprocessing.config import KEY_PREFIX
-from api.src.services import easyocr_service, orientation_service, paddle_service
+from api.src.services import orientation_service, paddle_service
 from api.src.services.content_draw_service import draw_boxes
 from api.src.services.image_loader import load_image
 
@@ -135,7 +135,7 @@ class HandwrittenContentDetector:
             raise DetectionError(DetectionErrorCode.NOT_READY, "The image is waiting for retake or continue.")
         processed = self.preprocessing.load_processed(image_id)
 
-        # 2. detect: Paddle first, EasyOCR fallback; turn a sideways page and detect again
+        # 2. detect with Paddle; turn a sideways page and detect again
         boxes, detector = self._find_boxes(processed)
         if cfg.auto_rotate and is_sideways(boxes):
             turns = orientation_service.classify(processed)["angle"] // 90
@@ -193,10 +193,7 @@ class HandwrittenContentDetector:
 
     def _find_boxes(self, processed: np.ndarray) -> tuple[list[dict], str]:
         boxes = paddle_service.detect(processed)
-        if boxes:
-            return boxes, Detector.PADDLE
-        boxes = easyocr_service.detect(processed, width_ths=self.config.easyocr_width_ths)
-        return boxes, (Detector.EASYOCR if boxes else Detector.NONE)
+        return boxes, (Detector.PADDLE if boxes else Detector.NONE)
 
     def _manifest(self, image_id: str) -> dict:
         try:

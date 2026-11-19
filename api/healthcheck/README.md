@@ -7,10 +7,9 @@
 
 | Check | Passes when |
 |---|---|
-| `models` | `PADDLE_PDX_CACHE_HOME` (default `/app/models/paddlex`) and `EASYOCR_MODULE_PATH` (default `/app/models/easyocr`) are not empty |
+| `models` | `PADDLE_PDX_CACHE_HOME` (default `/app/models/paddlex`) is not empty |
 | `paddle` | Paddle imports, runs on CPU, and was not built with CUDA |
-| `torch` | torch imports and `torch.cuda.is_available()` is `False` |
-| `ocr libs` | `easyocr`, `paddleocr` and `cv2` import |
+| `ocr libs` | `paddleocr` and `cv2` import |
 | `runtime` | The process is not running as root (uid ≠ 0). It also reports `OMP_NUM_THREADS`. |
 
 **Input:** None. It reads the environment variables above.

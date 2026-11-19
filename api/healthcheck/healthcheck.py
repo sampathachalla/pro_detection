@@ -10,7 +10,6 @@ from pathlib import Path
 
 MODEL_DIRS = {
     "paddlex models": os.environ.get("PADDLE_PDX_CACHE_HOME", "/app/models/paddlex"),
-    "easyocr models": os.environ.get("EASYOCR_MODULE_PATH", "/app/models/easyocr"),
 }
 
 
@@ -29,20 +28,11 @@ def check_paddle():
     return f"paddle {paddle.__version__}, device={paddle.device.get_device()}"
 
 
-def check_torch():
-    import torch
-
-    if torch.cuda.is_available():
-        raise RuntimeError("torch reports CUDA available")
-    return f"torch {torch.__version__}, cuda={torch.cuda.is_available()}"
-
-
 def check_ocr_libs():
     import cv2
-    import easyocr
     import paddleocr
 
-    return f"easyocr {easyocr.__version__}, paddleocr {paddleocr.__version__}, cv2 {cv2.__version__}"
+    return f"paddleocr {paddleocr.__version__}, cv2 {cv2.__version__}"
 
 
 def check_runtime():
@@ -54,7 +44,6 @@ def check_runtime():
 CHECKS = [
     ("models", check_models),
     ("paddle", check_paddle),
-    ("torch", check_torch),
     ("ocr libs", check_ocr_libs),
     ("runtime", check_runtime),
 ]

@@ -11,7 +11,7 @@ Rules for this layer:
 Typical flow:
 
 ```
-image bytes → load_image → preprocess → paddle_service.detect / easyocr_service.detect → boxes
+image bytes → load_image → preprocess → paddle_service.detect → boxes
 ```
 
 Both detectors return boxes in the same shape:
@@ -28,7 +28,7 @@ Points are integer pixel coordinates, clockwise from top-left.
 
 **What:** The package entry point.
 **Does:** Re-exports the services so callers can write `from api.src.services import preprocess, paddle_service`.
-**Exports:** `content_draw_service`, `easyocr_service`, `paddle_service`, `preprocess_service`, `quality_service`, `inspect_image`, `load_image`, `load_image_upright`, `PreprocessOptions`, `preprocess`, `Storage`, `LocalFileStorage`, `get_storage`.
+**Exports:** `content_draw_service`, `paddle_service`, `preprocess_service`, `quality_service`, `inspect_image`, `load_image`, `load_image_upright`, `PreprocessOptions`, `preprocess`, `Storage`, `LocalFileStorage`, `get_storage`.
 
 ---
 
@@ -150,17 +150,3 @@ Pipeline: resize → grayscale → denoise → contrast boost (CLAHE) → option
 |---|---|---|
 | `detect(image)` | BGR `np.ndarray` | list of `{"points": [[x, y] x4], "score": float}` |
 | `get_detector()` | none | the shared `paddleocr.TextDetection` instance |
-
----
-
-## `easyocr_service.py`
-
-**What:** EasyOCR text detector.
-**Does:** Finds text regions with EasyOCR's `reader.detect` and the English model. It only detects; it doesn't read the text. Downloads are off (`download_enabled=False`), so it fails instead of downloading if the weights are missing. The weights come from `EASYOCR_MODULE_PATH`. The model loads on the first call and is then reused (thread-safe).
-
-| Function | Input | Output |
-|---|---|---|
-| `detect(image, width_ths=0.1)` | BGR `np.ndarray`; `width_ths` is EasyOCR's box-merge threshold (lower keeps words apart) | list of `{"points": [[x, y] x4], "score": None}` |
-| `get_reader()` | none | the shared `easyocr.Reader` instance |
-
-`score` is always `None` because EasyOCR detection doesn't return confidence values.

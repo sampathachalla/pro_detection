@@ -13,11 +13,10 @@ Tests for `api/src/services/`, one file per service. They use Python's built-in 
 | `test_local_storage.py` | `storage.LocalFileStorage` | Keys and bytes in a temporary folder | put/get round trip, overwrite, exists/delete (removes empty folders), missing key raises `FileNotFoundError`, listing by prefix, no temporary files left behind, unsafe keys such as `../` rejected |
 | `test_preprocess_service.py` | `preprocess_service` | Synthetic text images | Output is BGR `uint8`; large images shrink to `max_side` with the correct `scale`; small images aren't enlarged; steps can be turned off; `to_gray` accepts gray or colour; `deskew` notices a 10° tilt and leaves a blank image unchanged |
 | `test_paddle_service.py` | `paddle_service.detect` (needs model weights) | Synthetic text image, raw and preprocessed | At least one box; each has 4 integer points and a `float` score between 0 and 1; the detector loads only once |
-| `test_easyocr_service.py` | `easyocr_service.detect` (needs model weights) | Synthetic text image, raw and preprocessed | At least one box; each has 4 integer points and `score` is `None`; the reader loads only once |
 
 ## How to run
 
-Run them from the project root (the folder that contains `api/`). The Paddle and EasyOCR tests need the baked-in models, so run them inside the container:
+Run them from the project root (the folder that contains `api/`). The Paddle tests need the baked-in models, so run them inside the container:
 
 ```bash
 # all service tests
