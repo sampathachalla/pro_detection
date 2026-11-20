@@ -9,6 +9,7 @@ const apiTarget = process.env.API_PROXY_TARGET || 'http://localhost:8000'
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
+    allowedHosts: ['handwriting.34.57.225.191.nip.io'],
     proxy: {
       '/api': { target: apiTarget, changeOrigin: true },
     },

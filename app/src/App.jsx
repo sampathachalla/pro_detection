@@ -5,9 +5,9 @@ import './App.css'
 // true: after processing, the Data panel opens Detection details and LLM call metrics,
 //       and both Run buttons are shown (Run = OCR + LLM, Run LLM only).
 // false: the Data panel stays on the gallery, and only the RUN_MODE button is shown, labelled "Run".
-const DEV = true
-// Used when DEV is false. Set VITE_RUN_MODE in app/.env.local: "hybrid" (OCR + LLM, default) or "llm_only".
-const RUN_MODE = import.meta.env.VITE_RUN_MODE === 'llm_only' ? 'llm_only' : 'hybrid'
+const DEV = false
+// Used when DEV is false. Set VITE_RUN_MODE in app/.env.local: "llm_only" (default) or "hybrid" (OCR + LLM).
+const RUN_MODE = import.meta.env.VITE_RUN_MODE === 'hybrid' ? 'hybrid' : 'llm_only'
 
 // Must match the API's preprocessing limits (JPEG/PNG, smaller than 20 MB).
 const ACCEPTED_TYPES = ['image/jpeg', 'image/png']
@@ -369,7 +369,7 @@ function App() {
     }).join(' ')
   }
   const galleries = [
-    { title: 'Discover', prefix: 'Sample', ids: [...new Set(testImageIds)].filter((id) => !missingIds.includes(id)), images: resourceImages, empty: 'No samples available.' },
+    { title: 'Samples', prefix: 'Sample', ids: [...new Set(testImageIds)].filter((id) => !missingIds.includes(id)), images: resourceImages, empty: 'No samples available.' },
     { title: 'Upload history', prefix: 'Upload', ids: historyFiltered ? recentIds.filter((id) => !testImageIds.includes(id)) : [], empty: historyFiltered ? 'Your uploads will appear here.' : 'Loading upload history…' },
   ]
 
@@ -797,7 +797,7 @@ function App() {
             aria-controls="discover-content"
             onClick={() => setDiscoverOpen((open) => !open)}
           >
-            Discover
+            Samples
             <span aria-hidden="true">{discoverOpen ? '▴' : '▾'}</span>
           </button>
           <div id="discover-content" className="data-gallery-content">

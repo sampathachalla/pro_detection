@@ -1,4 +1,14 @@
 services:
+  web:
+    build: ./app
+    image: handwriting-web:latest
+    ports:
+      - "5173:80"
+    depends_on:
+      handwriting-ocr:
+        condition: service_healthy
+    restart: unless-stopped
+
   handwriting-ocr:
     platform: linux/amd64
     build: .
